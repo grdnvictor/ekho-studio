@@ -9,8 +9,6 @@ services:
       - "3000:3000"
     volumes:
       - ./frontend:/usr/src/app
-      - next_node_modules:/usr/src/app/node_modules
-      - next_build:/usr/src/app/.next
     environment:
       - NODE_ENV=${NODE_ENV:-development}
     command: npm run dev
@@ -25,17 +23,13 @@ services:
     working_dir: /usr/src/app
     ports:
       - "4500:4500"
-      - "5555:5555"
     volumes:
       - ./backend:/usr/src/app
-      - nest_node_modules:/usr/src/app/node_modules
     environment:
       - NODE_ENV=${NODE_ENV:-development}
     command: npm run start:dev
     depends_on:
       postgresql:
-        condition: service_healthy
-      mongodb:
         condition: service_healthy
     networks:
       - backend
@@ -64,44 +58,23 @@ services:
     networks:
       - backend
 
-  mongodb:
-    image: mongo:8.0.9
-    container_name: ekho_mongo_db
-    ports:
-      - "27017:27017"
+  prisma-studio:
+    image: node:lts-alpine3.17
+    container_name: ekho_prisma_studio
+    working_dir: /usr/src/app
+    stop_grace_period: 1s
     volumes:
-      - mongodb-data:/data/db
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_INITDB_ROOT_USERNAME}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD}
-    restart: on-failure
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          'mongosh --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --eval "db.adminCommand(''ping'')" --quiet',
-        ]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - backend
-
-  maildev:
-    image: maildev/maildev
-    container_name: ekho_maildev
+      - ./backend:/usr/src/app
+    command: npx prisma studio --port 5555 --browser none
     ports:
-      - "1080:1080"
-      - "1025:1025"
+      - "5555:5555"
+    env_file:
+      - .env
     networks:
       - backend
 
 volumes:
-  next_node_modules:
-  nest_node_modules:
-  next_build:
   postgresql-data:
-  mongodb-data:
 
 networks:
   backend:
