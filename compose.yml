@@ -1,0 +1,107 @@
+services:
+  next:
+    build:
+      context: ./frontend
+      dockerfile: dockerfile.dev
+    container_name: ekho_next_service
+    working_dir: /usr/src/app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/usr/src/app
+      - next_node_modules:/usr/src/app/node_modules
+      - next_build:/usr/src/app/.next
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+    command: npm run dev
+    networks:
+      - backend
+
+  nest:
+    build:
+      context: ./backend
+      dockerfile: dockerfile.dev
+    container_name: ekho_nest_service
+    working_dir: /usr/src/app
+    ports:
+      - "4500:4500"
+      - "5555:5555"
+    volumes:
+      - ./backend:/usr/src/app
+      - nest_node_modules:/usr/src/app/node_modules
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+    command: npm run start:dev
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    networks:
+      - backend
+
+  postgresql:
+    image: postgres:17.5-alpine
+    container_name: ekho_postgres_db
+    volumes:
+      - postgresql-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    restart: on-failure
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h localhost",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  mongodb:
+    image: mongo:8.0.9
+    container_name: ekho_mongo_db
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_INITDB_ROOT_USERNAME}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD}
+    restart: on-failure
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'mongosh --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --eval "db.adminCommand(''ping'')" --quiet',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  maildev:
+    image: maildev/maildev
+    container_name: ekho_maildev
+    ports:
+      - "1080:1080"
+      - "1025:1025"
+    networks:
+      - backend
+
+volumes:
+  next_node_modules:
+  nest_node_modules:
+  next_build:
+  postgresql-data:
+  mongodb-data:
+
+networks:
+  backend:
