@@ -3,8 +3,8 @@ import { ApiController } from "@/controllers";
 
 export default function (router: Router) {
   router.get(
-    "/test",
-    ApiController.test
+    "/generate/audio",
+    ApiController.generateAudio
   )
 
   return router;

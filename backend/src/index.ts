@@ -31,6 +31,6 @@ app.use((_request, response) => {
 
 app.listen(INTERNAL_PORT, () => {
   console.log(
-    `[auth-service]: Auth service is running at http://localhost:${EXPOSED_PORT}`,
+    `[SERVER]: SERVER is running at http://localhost:${EXPOSED_PORT}`,
   );
 });
