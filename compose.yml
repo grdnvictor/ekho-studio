@@ -56,7 +56,7 @@ services:
     working_dir: /usr/src/app
     stop_grace_period: 1s
     volumes:
-      - ./:/usr/src/app
+      - ./backend:/usr/src/app
     command: npx prisma studio --port 5555 --browser none
     ports:
       - "5555:5555"
