@@ -1,0 +1,38 @@
+# @name = signup
+POST {{BASE_URL}}/signup
+Content-Type: application/json
+
+{
+  "firstname": "aaaaa",
+  "lastname": "GRANDIN",
+  "phoneNumber": "0788373057",
+  "email": "dddddMAsIddddDL@gmail.com",
+  "password": "ROOTroot123#",
+  "passwordConfirmation": "ROOTroot123#"
+}
+
+###
+# @name = login
+POST {{BASE_URL}}/login
+Content-Type: application/json
+
+{
+  "email": "dddddMAsIddddDL@gmail.com",
+  "password": "ROOTroot123#"
+}
+> {%
+    const token = response.body.token;
+    console.log(token);
+
+    // client.global.set("JWT_TOKEN", body.message);
+%}
+
+###
+# @name = logout
+POST {{BASE_URL}}/logout
+
+
+###
+# @name = validateToken
+GET {{BASE_URL}}/token/validate
+
