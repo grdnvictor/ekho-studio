@@ -1,0 +1,8 @@
+# @name Generate Audio
+POST {{BASE_URL}}/generate/audio
+Content-Type: application/json
+
+{
+  "text": "Offre exceptionnelle ! Jusqu'à 50% de réduction sur toute la collection été chez MaxMode. Mais dépêchez-vous, l'offre se termine dimanche ! MaxMode, la mode accessible."
+
+}
