@@ -1,7 +1,6 @@
 import express, {Express} from "express";
 import dotenv from "dotenv";
 import cors, {CorsOptions} from "cors";
-import cookieParser from "cookie-parser";
 
 import RouteLoader from "./RouteLoader.ts";
 
@@ -22,12 +21,6 @@ app.use(cors(corsOptions));
 
 const routes = await RouteLoader();
 app.use("/", routes);
-
-app.use((_request, response) => {
-  const a = 'a';
-  console.log(a)
-  response.status(404).send();
-});
 
 app.listen(INTERNAL_PORT, () => {
   console.log(
