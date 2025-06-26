@@ -5,7 +5,7 @@ import { AudioUtils } from "./utils";
 import { AUDIO_CONFIG } from "./constants";
 import { ValidatedRequest } from "@/types";
 
-export class ApiController {
+export class AudioController {
   static async generateAudio(
     request: Request,
     response: Response,
@@ -20,7 +20,6 @@ export class ApiController {
 
       // Note: You'll need to define how to get the apiKey
       const apiKey = process.env.GEMINI_API_KEY;
-      console.log(apiKey);
       if (!apiKey) {
         console.error("API key is not defined");
         response.status(500).json({

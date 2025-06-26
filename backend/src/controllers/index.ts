@@ -1,1 +1,1 @@
-export {ApiController} from "./authentication";
+export {AudioController} from "./audio";
