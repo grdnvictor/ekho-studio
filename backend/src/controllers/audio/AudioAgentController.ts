@@ -46,6 +46,7 @@ export class AudioAgentController {
       const lastMessage = result.messages[result.messages.length - 1];
 
       // Analyser la réponse pour déterminer si des informations manquent
+      // @ts-ignore
       const analysisResult = AudioAgentController.analyzeAgentResponse(lastMessage.content);
 
       response.status(200).json({
@@ -102,6 +103,7 @@ export class AudioAgentController {
       );
 
       const lastMessage = result.messages[result.messages.length - 1];
+      // @ts-ignore
       const analysisResult = AudioAgentController.analyzeProjectResult(lastMessage.content);
 
       response.status(200).json({

@@ -1,23 +1,38 @@
-// backend/src/routes/audio-agents.ts
-import { Router } from "express";
-import { AudioAgentController } from "@/controllers/audio/AudioAgentController";
-import { validateContract } from "@/middlewares";
-import { AudioAgentChatContract, AudioProjectContract } from "@/contracts/api/AudioAgentContracts";
+// backend/src/agents/audio/audio-agent.ts
 
-export default function (router: Router) {
-  // Chat interactif avec l'agent audio
-  router.post(
-    "/audio-agent/chat",
-    validateContract(AudioAgentChatContract),
-    AudioAgentController.chat
-  );
+import { createReactAgent } from "@langchain/langgraph/prebuilt";
+import { ChatOpenAI } from "@langchain/openai";
+import { MemorySaver } from "@langchain/langgraph";
+import { loadAgentPromptWithVariables } from "@/utils/prompt-loader";
+import {
+  audioGenerationTool,
+  voiceSelectionTool,
+  scriptOptimizationTool,
+} from "@/agents/audio/tools";
 
-  // Génération complète d'un projet audio
-  router.post(
-    "/audio-agent/generate-project",
-    validateContract(AudioProjectContract),
-    AudioAgentController.generateProject
-  );
+// Chargement du prompt
+const audioAgentPrompt = loadAgentPromptWithVariables("audio");
 
-  return router;
-}
+// Configuration LangChain pour LM Studio
+const agentModel = new ChatOpenAI({
+  temperature: 0.7,
+  modelName: "local-model",
+  openAIApiKey: "lm-studio", // Factice
+  configuration: {
+    baseURL: "http://localhost:1234/v1", // LM Studio local
+    apiKey: "not-needed"
+  },
+});
+
+const agentCheckpointer = new MemorySaver();
+
+export const audioAgent = createReactAgent({
+  prompt: audioAgentPrompt,
+  llm: agentModel,
+  tools: [
+    voiceSelectionTool,
+    audioGenerationTool,
+    scriptOptimizationTool,
+  ],
+  checkpointSaver: agentCheckpointer,
+});

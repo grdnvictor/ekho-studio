@@ -66,8 +66,8 @@ export const AudioProjectContract: ContractSkeletonType<AudioProjectContract> =
         deadline: z.string().optional(),
         budget: z.number().optional(),
         technicalSpecs: z.object({
-          format: z.string().optional(),
-          quality: z.string().optional(),
+          format: z.string(),
+          quality: z.string(),
         }).optional(),
       }).optional(),
     }),
