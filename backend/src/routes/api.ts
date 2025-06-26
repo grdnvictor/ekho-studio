@@ -27,5 +27,10 @@ export default function (router: Router) {
     AudioAgentController.generateProject
   );
 
+  router.post(
+    "/audio-agent/clear-history",
+    AudioAgentController.clearHistory
+  );
+
   return router;
 }
