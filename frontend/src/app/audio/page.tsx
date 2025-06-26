@@ -23,23 +23,21 @@ interface Message {
 export default function AudioPage() {
     const [textInput, setTextInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    const [messages, setMessages] = useState<Message[]>([
-        {
-            id: '1',
-            content: "🎙️ Bonjour ! Je suis votre assistant audio professionnel d'Ekho Studio. Je peux vous aider à créer des contenus audio de qualité. Que souhaitez-vous faire aujourd'hui ?",
-            sender: 'agent',
-            timestamp: new Date(),
-        }
-    ]);
-    const [sessionId] = useState(() => `session_${Date.now()}`);
+    const [messages, setMessages] = useState<Message[]>([]);
+    const [sessionId, setSessionId] = useState<string>('');
     const [audioUrl, setAudioUrl] = useState('');
     const [showAudioControls, setShowAudioControls] = useState(false);
     const [collectedInfo, setCollectedInfo] = useState<string[]>([]);
+    const [isInitialized, setIsInitialized] = useState(false);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
 
     const API_BASE_URL = 'http://localhost:3333';
+
+    // Generate stable unique IDs
+    let messageIdCounter = 1;
+    const generateMessageId = () => `msg_${messageIdCounter++}_${Date.now()}`;
 
     // Scroll automatique vers le bas
     const scrollToBottom = () => {
@@ -49,6 +47,21 @@ export default function AudioPage() {
     useEffect(() => {
         scrollToBottom();
     }, [messages]);
+
+    // Initialize component on client side
+    useEffect(() => {
+        if (!isInitialized) {
+            const newSessionId = `session_${Date.now()}`;
+            setSessionId(newSessionId);
+            setMessages([{
+                id: '1',
+                content: "🎙️ Bonjour ! Je suis votre assistant audio professionnel d'Ekho Studio. Je peux vous aider à créer des contenus audio de qualité. Que souhaitez-vous faire aujourd'hui ?",
+                sender: 'agent',
+                timestamp: new Date(),
+            }]);
+            setIsInitialized(true);
+        }
+    }, [isInitialized]);
 
     // Focus sur l'input
     useEffect(() => {
@@ -74,7 +87,7 @@ export default function AudioPage() {
 
             // Reset local state
             setMessages([{
-                id: Date.now().toString(),
+                id: '1',
                 content: "🎙️ Nouvelle conversation ! Comment puis-je vous aider avec votre projet audio ?",
                 sender: 'agent',
                 timestamp: new Date(),
@@ -129,7 +142,7 @@ export default function AudioPage() {
             if (result.success) {
                 // Ajouter la réponse de l'agent
                 const agentMessage: Message = {
-                    id: (Date.now() + 1).toString(),
+                    id: generateMessageId(),
                     content: result.response,
                     sender: 'agent',
                     timestamp: new Date(),
@@ -165,7 +178,7 @@ export default function AudioPage() {
 
             // Ajouter un message d'erreur
             const errorMessage: Message = {
-                id: (Date.now() + 2).toString(),
+                id: generateMessageId(),
                 content: `❌ Désolé, j'ai rencontré un problème : ${error.message}. Pouvez-vous réessayer ?`,
                 sender: 'agent',
                 timestamp: new Date(),
@@ -183,6 +196,18 @@ export default function AudioPage() {
             minute: '2-digit'
         });
     };
+
+    // Don't render until client-side initialization is complete
+    if (!isInitialized) {
+        return (
+            <div className="min-h-screen bg-gradient-to-br from-[#667eea] to-[#764ba2] p-4 flex items-center justify-center">
+                <div className="text-white text-center">
+                    <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
+                    <p>Chargement...</p>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-[#667eea] to-[#764ba2] p-4">

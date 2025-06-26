@@ -1,7 +1,4 @@
-// backend/src/agents/audio/audio-agent.ts
-
 import { ChatOpenAI } from "@langchain/openai";
-import { MemorySaver } from "@langchain/langgraph";
 
 console.log("🚀 Initialisation de l'agent audio intelligent...");
 
@@ -17,8 +14,6 @@ const agentModel = new ChatOpenAI({
     baseURL: LM_STUDIO_URL
   }
 });
-
-const agentCheckpointer = new MemorySaver();
 
 // Agent conversationnel simple qui pose les bonnes questions
 export const audioAgent = {
