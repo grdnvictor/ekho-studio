@@ -1,1 +1,2 @@
-export {AudioController} from "./audio";
+export { AudioController } from "./audio";
+export { AudioAgentController } from "./audio/AudioAgentController";
