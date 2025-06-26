@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Loader2, Send, Mic, Volume2, ArrowLeft, User, Bot, Trash2, CheckCircle, Clock, Target } from 'lucide-react';
+import { Loader2, Send, Mic, Volume2, ArrowLeft, User, Bot, Trash2, CheckCircle, Clock, Target, Download, Play, Pause } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -19,6 +19,18 @@ interface Message {
     collectedInfo?: string[];
     conversationLength?: number;
     phase?: 'discovery' | 'clarification' | 'generation' | 'complete';
+    audioUrl?: string;
+    audioGenerated?: boolean;
+}
+
+interface AudioContext {
+    textContent?: string;
+    voicePreference?: string;
+    emotionStyle?: string;
+    targetAudience?: string;
+    projectType?: string;
+    duration?: number;
+    speed?: number;
 }
 
 const PHASE_CONFIG = {
@@ -44,7 +56,7 @@ const PHASE_CONFIG = {
         name: 'Terminé',
         color: 'bg-purple-100 text-purple-800',
         icon: CheckCircle,
-        description: 'Toutes infos collectées'
+        description: 'Audio généré'
     }
 };
 
@@ -61,14 +73,16 @@ export default function AudioPage() {
         }
     ]);
     const [sessionId] = useState(() => `session_${Date.now()}`);
-    const [audioUrl, setAudioUrl] = useState('');
-    const [showAudioControls, setShowAudioControls] = useState(false);
     const [collectedInfo, setCollectedInfo] = useState<string[]>([]);
     const [currentPhase, setCurrentPhase] = useState<'discovery' | 'clarification' | 'generation' | 'complete'>('discovery');
     const [missingInfo, setMissingInfo] = useState<string[]>([]);
+    const [currentContext, setCurrentContext] = useState<AudioContext>({});
+    const [generatedAudios, setGeneratedAudios] = useState<string[]>([]);
+    const [isPlaying, setIsPlaying] = useState<Record<string, boolean>>({});
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
+    const audioRefs = useRef<Record<string, HTMLAudioElement>>({});
 
     const API_BASE_URL = 'http://localhost:3333';
 
@@ -114,7 +128,9 @@ export default function AudioPage() {
             setCollectedInfo([]);
             setCurrentPhase('discovery');
             setMissingInfo([]);
-            setShowAudioControls(false);
+            setCurrentContext({});
+            setGeneratedAudios([]);
+            setIsPlaying({});
             setTextInput('');
         } catch (error) {
             console.error('Erreur lors du reset:', error);
@@ -136,7 +152,6 @@ export default function AudioPage() {
         setMessages(prev => [...prev, userMessage]);
         setTextInput('');
         setIsLoading(true);
-        setShowAudioControls(false);
 
         try {
             const response = await fetch(`${API_BASE_URL}/audio-agent/chat`, {
@@ -147,11 +162,7 @@ export default function AudioPage() {
                 body: JSON.stringify({
                     message: text,
                     sessionId: sessionId,
-                    context: {
-                        targetAudience: "général",
-                        style: "narratif",
-                        emotion: "neutre"
-                    }
+                    // Ne pas envoyer de contexte par défaut - laisser l'agent analyser
                 })
             });
 
@@ -162,7 +173,25 @@ export default function AudioPage() {
             const result = await response.json();
 
             if (result.success) {
+                // Extraire l'URL audio de la réponse si présente
+                let audioUrl: string | null = null;
+                if (result.audioGenerated && result.audioUrl) {
+                    audioUrl = result.audioUrl;
+                    // @ts-ignore
+                    setGeneratedAudios(prev => [...prev, audioUrl]);
+                } else if (result.response && typeof result.response === 'string') {
+                    // Chercher une URL d'audio dans le texte de réponse
+                    const audioUrlMatch = result.response.match(/https?:\/\/[^\s]+\/audio\/[^\s]+\.(wav|mp3|ogg)/);
+                    if (audioUrlMatch) {
+                        audioUrl = audioUrlMatch[0];
+                        // @ts-ignore
+                        setGeneratedAudios(prev => [...prev, audioUrl]);
+                    }
+                }
+
                 // Ajouter la réponse de l'agent
+                // @ts-ignore
+                // @ts-ignore
                 const agentMessage: Message = {
                     id: (Date.now() + 1).toString(),
                     content: result.response,
@@ -174,7 +203,10 @@ export default function AudioPage() {
                     canProceed: result.canProceed,
                     collectedInfo: result.collectedInfo,
                     conversationLength: result.conversationLength,
-                    phase: result.phase
+                    phase: result.phase,
+                    //@ts-ignore
+                    audioUrl: audioUrl,
+                    audioGenerated: result.audioGenerated
                 };
 
                 setMessages(prev => [...prev, agentMessage]);
@@ -189,15 +221,10 @@ export default function AudioPage() {
                 if (result.missingInfo) {
                     setMissingInfo(result.missingInfo);
                 }
-
-                // Vérifier si un fichier audio est généré
-                if (result.canProceed && result.response.includes('http')) {
-                    const audioUrlMatch = result.response.match(/https?:\/\/[^\s]+\.(wav|mp3|ogg)/);
-                    if (audioUrlMatch) {
-                        setAudioUrl(audioUrlMatch[0]);
-                        setShowAudioControls(true);
-                    }
+                if (result.context) {
+                    setCurrentContext(result.context);
                 }
+
             } else {
                 throw new Error(result.error || 'Erreur inconnue');
             }
@@ -224,6 +251,38 @@ export default function AudioPage() {
             hour: '2-digit',
             minute: '2-digit'
         });
+    };
+
+    const toggleAudioPlayback = (audioUrl: string) => {
+        const audio = audioRefs.current[audioUrl];
+        if (!audio) return;
+
+        if (isPlaying[audioUrl]) {
+            audio.pause();
+            setIsPlaying(prev => ({ ...prev, [audioUrl]: false }));
+        } else {
+            // Pause tous les autres audios
+            Object.keys(audioRefs.current).forEach(url => {
+                if (url !== audioUrl && audioRefs.current[url]) {
+                    audioRefs.current[url].pause();
+                }
+            });
+            setIsPlaying(prev => Object.keys(prev).reduce((acc, key) => {
+                acc[key] = key === audioUrl;
+                return acc;
+            }, {} as Record<string, boolean>));
+
+            audio.play();
+        }
+    };
+
+    const downloadAudio = (audioUrl: string) => {
+        const link = document.createElement('a');
+        link.href = audioUrl;
+        link.download = `audio_${Date.now()}.wav`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
     };
 
     const phaseConfig = PHASE_CONFIG[currentPhase];
@@ -261,6 +320,44 @@ export default function AudioPage() {
                             <p className="text-sm text-gray-600 mt-2">{phaseConfig.description}</p>
                         </CardContent>
                     </Card>
+
+                    {/* Contexte détecté */}
+                    {Object.keys(currentContext).length > 0 && (
+                        <Card className="bg-white/95 backdrop-blur shadow-xl border-0">
+                            <CardHeader className="pb-3">
+                                <CardTitle className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                                    <Target className="w-5 h-5 text-blue-600" />
+                                    Contexte détecté
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-2">
+                                {currentContext.projectType && (
+                                    <div className="flex items-center gap-2 p-2 bg-blue-50 rounded-lg">
+                                        <span className="text-sm font-medium text-blue-800">Type:</span>
+                                        <span className="text-sm text-blue-700">{currentContext.projectType}</span>
+                                    </div>
+                                )}
+                                {currentContext.voicePreference && (
+                                    <div className="flex items-center gap-2 p-2 bg-purple-50 rounded-lg">
+                                        <span className="text-sm font-medium text-purple-800">Voix:</span>
+                                        <span className="text-sm text-purple-700">{currentContext.voicePreference}</span>
+                                    </div>
+                                )}
+                                {currentContext.emotionStyle && (
+                                    <div className="flex items-center gap-2 p-2 bg-green-50 rounded-lg">
+                                        <span className="text-sm font-medium text-green-800">Style:</span>
+                                        <span className="text-sm text-green-700">{currentContext.emotionStyle}</span>
+                                    </div>
+                                )}
+                                {currentContext.targetAudience && (
+                                    <div className="flex items-center gap-2 p-2 bg-orange-50 rounded-lg">
+                                        <span className="text-sm font-medium text-orange-800">Public:</span>
+                                        <span className="text-sm text-orange-700">{currentContext.targetAudience}</span>
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+                    )}
 
                     {/* Infos collectées */}
                     <Card className="bg-white/95 backdrop-blur shadow-xl border-0">
@@ -302,6 +399,62 @@ export default function AudioPage() {
                             )}
                         </CardContent>
                     </Card>
+
+                    {/* Audios générés */}
+                    {generatedAudios.length > 0 && (
+                        <Card className="bg-white/95 backdrop-blur shadow-xl border-0">
+                            <CardHeader className="pb-3">
+                                <CardTitle className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                                    <Volume2 className="w-5 h-5 text-purple-600" />
+                                    Audios générés ({generatedAudios.length})
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-3">
+                                {generatedAudios.map((audioUrl, index) => (
+                                    <div key={audioUrl} className="p-3 bg-purple-50 rounded-lg border border-purple-200">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="text-sm font-medium text-purple-800">
+                                                Audio #{index + 1}
+                                            </span>
+                                            <div className="flex gap-1">
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => toggleAudioPlayback(audioUrl)}
+                                                    className="h-8 w-8 p-0"
+                                                >
+                                                    {isPlaying[audioUrl] ? (
+                                                        <Pause className="w-3 h-3" />
+                                                    ) : (
+                                                        <Play className="w-3 h-3" />
+                                                    )}
+                                                </Button>
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => downloadAudio(audioUrl)}
+                                                    className="h-8 w-8 p-0"
+                                                >
+                                                    <Download className="w-3 h-3" />
+                                                </Button>
+                                            </div>
+                                        </div>
+                                        <audio
+                                            ref={el => {
+                                                if (el) audioRefs.current[audioUrl] = el;
+                                            }}
+                                            src={audioUrl}
+                                            onEnded={() => setIsPlaying(prev => ({ ...prev, [audioUrl]: false }))}
+                                            onPlay={() => setIsPlaying(prev => ({ ...prev, [audioUrl]: true }))}
+                                            onPause={() => setIsPlaying(prev => ({ ...prev, [audioUrl]: false }))}
+                                            className="w-full h-8"
+                                            controls
+                                        />
+                                    </div>
+                                ))}
+                            </CardContent>
+                        </Card>
+                    )}
 
                     {/* Actions */}
                     <Card className="bg-white/95 backdrop-blur shadow-xl border-0">
@@ -376,6 +529,24 @@ export default function AudioPage() {
                                             {message.content}
                                         </div>
 
+                                        {/* Audio intégré dans le message */}
+                                        {message.audioUrl && (
+                                            <div className="mt-3 p-3 bg-white/20 rounded-lg">
+                                                <div className="flex items-center gap-2 mb-2">
+                                                    <Volume2 className="w-4 h-4" />
+                                                    <span className="text-xs font-medium">Audio généré</span>
+                                                </div>
+                                                <audio
+                                                    controls
+                                                    src={message.audioUrl}
+                                                    className="w-full h-8"
+                                                    style={{ colorScheme: message.sender === 'user' ? 'dark' : 'light' }}
+                                                >
+                                                    Votre navigateur ne supporte pas l'audio HTML5.
+                                                </audio>
+                                            </div>
+                                        )}
+
                                         {/* Phase indicator pour l'agent */}
                                         {message.sender === 'agent' && message.phase && (
                                             <div className="mt-3 flex items-center gap-2">
@@ -414,18 +585,13 @@ export default function AudioPage() {
                                             </div>
                                         )}
 
-                                        {/* Infos sur la conversation */}
-                                        {message.sender === 'agent' && message.conversationLength && (
-                                            <div className="mt-2 text-xs text-gray-500">
-                                                💾 {message.conversationLength} messages • {formatTime(message.timestamp)}
-                                            </div>
-                                        )}
-
-                                        {message.sender === 'user' && (
-                                            <div className="mt-2 text-xs opacity-70">
-                                                {formatTime(message.timestamp)}
-                                            </div>
-                                        )}
+                                        {/* Timestamp */}
+                                        <div className={`mt-2 text-xs ${
+                                            message.sender === 'user' ? 'opacity-70' : 'text-gray-500'
+                                        }`}>
+                                            {formatTime(message.timestamp)}
+                                            {message.conversationLength && ` • ${message.conversationLength} messages`}
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -450,26 +616,6 @@ export default function AudioPage() {
 
                         <div ref={messagesEndRef} />
                     </CardContent>
-
-                    {/* Audio Controls */}
-                    {showAudioControls && (
-                        <div className="px-4 py-3 border-t bg-gradient-to-r from-[#667eea]/10 to-[#f093fb]/10">
-                            <div className="flex items-center gap-3">
-                                <Volume2 className="h-5 w-5 text-[#667eea]" />
-                                <div className="flex-1">
-                                    <p className="text-sm font-semibold text-gray-700 mb-2">🎵 Audio généré avec succès !</p>
-                                    <audio
-                                        controls
-                                        src={audioUrl}
-                                        className="w-full h-8"
-                                        style={{ colorScheme: 'light' }}
-                                    >
-                                        Votre navigateur ne supporte pas l'audio HTML5.
-                                    </audio>
-                                </div>
-                            </div>
-                        </div>
-                    )}
 
                     {/* Input Area */}
                     <div className="p-4 border-t bg-white">

@@ -5,6 +5,7 @@ services:
       dockerfile: dockerfile.dev
     container_name: ekho_next_service
     working_dir: /usr/src/app
+    stop_grace_period: 1s
     ports:
       - "3000:3000"
     volumes:
