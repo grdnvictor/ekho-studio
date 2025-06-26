@@ -16,7 +16,7 @@ export class AudioService {
 
   constructor() {
     this.llm = new ChatOpenAI({
-      temperature: 0.7,
+      temperature: 0.2,
       modelName: "local-model",
       openAIApiKey: "lm-studio",
       configuration: {

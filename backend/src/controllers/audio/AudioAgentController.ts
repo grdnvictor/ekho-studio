@@ -3,10 +3,7 @@ import { Request, Response } from "express";
 import { audioAgent } from "@/agents/audio/audio-agent";
 import { AudioAgentChatContractType } from "@/contracts/api/AudioAgentContracts";
 import { ValidatedRequest } from "@/types";
-import { SystemMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
-
-// Stockage en mémoire des conversations (en production, utilisez Redis ou une DB)
-const conversationMemory: Map<string, any[]> = new Map();
+import { HumanMessage } from "@langchain/core/messages";
 
 export class AudioAgentController {
   static async chat(request: Request, response: Response): Promise<void> {
@@ -30,10 +27,6 @@ export class AudioAgentController {
         },
       };
 
-      // Récupérer l'historique de la conversation
-      let conversationHistory = conversationMemory.get(finalSessionId) || [];
-      console.log("📚 Historique récupéré:", conversationHistory.length, "messages");
-
       // Construire le message avec contexte si fourni
       let fullMessage = message;
       if (context) {
@@ -44,89 +37,31 @@ export class AudioAgentController {
         if (context.emotion) contextParts.push(`Émotion: ${context.emotion}`);
 
         if (contextParts.length > 0) {
-          fullMessage = `${message}\n\nContexte déjà fourni: ${contextParts.join(', ')}`;
+          fullMessage = `${message}\n\nContexte fourni: ${contextParts.join(', ')}`;
         }
       }
 
-      // Ajouter le nouveau message utilisateur à l'historique
-      const newUserMessage = new HumanMessage(fullMessage);
-      conversationHistory.push(newUserMessage);
+      // Créer le message utilisateur
+      const userMessage = new HumanMessage(fullMessage);
 
-      // Préparer les messages pour l'agent (système + historique)
-      const systemPrompt = `Tu es l'Assistant Audio professionnel d'Ekho Studio. 
-
-MISSION: Aider l'utilisateur à créer du contenu audio de qualité professionnelle.
-
-CONTEXTE DE LA CONVERSATION:
-- Tu as accès à tout l'historique de cette conversation
-- Ne redemande PAS les informations déjà fournies par l'utilisateur
-- Fais référence aux éléments mentionnés précédemment
-- Progresse logiquement dans la collecte d'informations
-
-ÉTAPES OBLIGATOIRES:
-1. Analyser TOUT l'historique de la conversation
-2. Identifier les informations DÉJÀ collectées
-3. Poser UNIQUEMENT les questions pour les informations manquantes
-4. Recommander des solutions audio quand possible
-5. Proposer la génération quand toutes les infos sont collectées
-
-QUESTIONS ESSENTIELLES À COLLECTER (si pas encore mentionnées):
-- Quel est le contenu/texte à vocaliser ?
-- Quel est le public cible ? (âge, contexte)
-- Quelle est la durée souhaitée ?
-- Quel style/ton ? (professionnel, chaleureux, dynamique, etc.)
-- Quelle utilisation ? (pub radio, podcast, formation, etc.)
-
-RÈGLES IMPORTANTES:
-- EXAMINE d'abord l'historique complet avant de répondre
-- Ne pose UNE SEULE question à la fois pour ne pas surcharger
-- Si l'utilisateur a déjà donné une info, n'en redemande JAMAIS
-- Sois conversationnel et professionnel
-- Propose des exemples concrets
-- Utilise des émojis pour rendre ça plus engageant
-- Fais des résumés de ce qui a été collecté quand approprié
-
-Réponds toujours en français avec un ton expert mais accessible.`;
-
-      const allMessages = [
-        new SystemMessage(systemPrompt),
-        ...conversationHistory
-      ];
-
-      console.log("🚀 Envoi à l'agent avec", allMessages.length, "messages");
+      console.log("🚀 Envoi à l'agent...");
 
       const result = await audioAgent.invoke(
-        { messages: allMessages },
+        { messages: [userMessage] },
         config
       );
 
       const responseContent = result.messages[0].content;
+      const conversationState = result.conversationState;
+
       console.log("📝 Réponse agent:", responseContent?.slice(0, 200));
+      console.log("📊 État conversation:", conversationState);
 
-      // Ajouter la réponse de l'agent à l'historique
-      const agentMessage = new AIMessage({
-        content: responseContent as string
-      });
-      conversationHistory.push(agentMessage);
-
-      // Sauvegarder l'historique mis à jour
-      conversationMemory.set(finalSessionId, conversationHistory);
-      console.log("💾 Historique sauvegardé:", conversationHistory.length, "messages");
-
-      // Analyser la réponse pour déterminer l'état
-      const analysis = AudioAgentController.analyzeResponse(
-        responseContent ?
-          (Array.isArray(responseContent)
-            ? (typeof responseContent[0] === 'string'
-              ? responseContent[0]
-              : 'string' in responseContent[0]
-                ? String(responseContent[0].string)
-                : String(responseContent[0]))
-            : String(responseContent))
-          : '',
-        conversationHistory
+      // Analyser la réponse pour déterminer les actions possibles
+      const analysis = AudioAgentController.analyzeAgentResponse(
+        responseContent as string,
+        conversationState
       );
-      console.log("📊 Analyse:", analysis);
 
       response.status(200).json({
         success: true,
@@ -138,8 +73,9 @@ Réponds toujours en français avec un ton expert mais accessible.`;
         nextSteps: analysis.nextSteps,
         canProceed: analysis.canProceed,
         readyToGenerate: analysis.readyToGenerate,
-        conversationLength: conversationHistory.length,
-        collectedInfo: analysis.collectedInfo
+        conversationLength: result.historyLength,
+        collectedInfo: conversationState.collectedInfo,
+        phase: conversationState.phase
       });
 
     } catch (error: unknown) {
@@ -154,113 +90,117 @@ Réponds toujours en français avec un ton expert mais accessible.`;
   }
 
   /**
-   * Analyse intelligente avec prise en compte de l'historique
+   * Analyse intelligente de la réponse de l'agent
    */
-  private static analyzeResponse(content: string, history: any[]): {
+  private static analyzeAgentResponse(content: string, state: any): {
     needsMoreInfo: boolean;
     missingInfo: string[];
     suggestions: string[];
     nextSteps: string[];
     canProceed: boolean;
     readyToGenerate: boolean;
-    collectedInfo: string[];
   } {
     const lowerContent = content.toLowerCase();
 
-    // Analyser l'historique pour voir ce qui a été collecté
-    const historyText = history
-      .filter(msg => msg._getType() === 'human')
-      .map(msg => msg.content.toLowerCase())
-      .join(' ');
-
-    console.log("🔍 Analyse de l'historique:", historyText.slice(0, 200));
-
-    const collectedInfo = [];
+    // Déterminer les infos manquantes basé sur l'état
     const missingInfo = [];
-
-    // Vérifier les informations déjà collectées dans l'historique
-    if (historyText.includes('texte') || historyText.includes('contenu') || historyText.includes('script')) {
-      collectedInfo.push('Contenu à vocaliser');
-    } else {
-      missingInfo.push('Contenu à vocaliser');
-    }
-
-    if (historyText.includes('public') || historyText.includes('audience') || historyText.includes('âge')) {
-      collectedInfo.push('Public cible');
-    } else if (lowerContent.includes('public') || lowerContent.includes('audience')) {
-      missingInfo.push('Public cible');
-    }
-
-    if (historyText.includes('durée') || historyText.includes('seconde') || historyText.includes('minute')) {
-      collectedInfo.push('Durée');
-    } else if (lowerContent.includes('durée') || lowerContent.includes('long')) {
-      missingInfo.push('Durée souhaitée');
-    }
-
-    if (historyText.includes('style') || historyText.includes('ton') || historyText.includes('professionnel') || historyText.includes('chaleureux')) {
-      collectedInfo.push('Style/ton');
-    } else if (lowerContent.includes('style') || lowerContent.includes('ton')) {
-      missingInfo.push('Style/ton');
-    }
-
-    if (historyText.includes('radio') || historyText.includes('podcast') || historyText.includes('formation') || historyText.includes('publicité')) {
-      collectedInfo.push('Utilisation');
-    } else if (lowerContent.includes('utilisation') || lowerContent.includes('contexte')) {
-      missingInfo.push('Contexte d\'utilisation');
-    }
+    if (!state.hasContent) missingInfo.push('Contenu à vocaliser');
+    if (!state.hasAudience) missingInfo.push('Public cible');
+    if (!state.hasDuration) missingInfo.push('Durée souhaitée');
+    if (!state.hasStyle) missingInfo.push('Style/ton');
+    if (!state.hasContext) missingInfo.push('Contexte d\'utilisation');
 
     // Indicateurs que l'agent pose des questions
     const askingQuestions = [
-      /quel est/i,
-      /quelle est/i,
+      /quel.*\?/i,
+      /quelle.*\?/i,
       /pouvez-vous/i,
       /pourriez-vous/i,
       /avez-vous/i,
-      /\?/,
-      /préciser/i,
       /me dire/i,
-      /plus d'informations/i
+      /préciser/i,
+      /plus.*informations/i,
+      /\?.*$/m
     ].some(pattern => pattern.test(content));
 
     // Indicateurs que l'agent est prêt à générer
     const readyToGenerate = [
       /générer/i,
-      /créer l'audio/i,
+      /créer.*audio/i,
       /procéder/i,
       /lancer/i,
       /parfait/i,
       /excellent/i,
-      /toutes les informations/i,
+      /toutes.*informations/i,
+      /prêt/i,
       /maintenant/i
-    ].some(pattern => pattern.test(content));
+    ].some(pattern => pattern.test(content)) && state.phase === 'generation';
 
     const needsMoreInfo = askingQuestions && !readyToGenerate;
+    const canProceed = state.phase === 'generation' || state.phase === 'complete';
 
-    console.log("📊 Infos collectées:", collectedInfo);
-    console.log("📊 Infos manquantes:", missingInfo);
+    // Générer des suggestions basées sur la phase
+    let suggestions: string[] = [];
+    let nextSteps: string[] = [];
+
+    switch (state.phase) {
+      case 'discovery':
+        suggestions = [
+          "Décrivez votre projet audio en quelques mots",
+          "Mentionnez le type de contenu (pub, formation, etc.)",
+          "L'assistant va vous guider étape par étape"
+        ];
+        nextSteps = [
+          "Décrire le projet",
+          "Fournir le contexte général"
+        ];
+        break;
+
+      case 'clarification':
+        suggestions = [
+          "Répondez à la question posée par l'assistant",
+          "Soyez précis dans votre réponse",
+          "Une seule information à la fois"
+        ];
+        nextSteps = [
+          "Répondre à la question",
+          "Clarifier les détails demandés"
+        ];
+        break;
+
+      case 'generation':
+        suggestions = [
+          "L'assistant peut maintenant générer votre audio",
+          "Confirmez pour procéder",
+          "Vous pourrez écouter et télécharger le résultat"
+        ];
+        nextSteps = [
+          "Confirmer la génération",
+          "Générer l'audio",
+          "Écouter le résultat"
+        ];
+        break;
+
+      case 'complete':
+        suggestions = [
+          "Toutes les informations sont collectées",
+          "Prêt pour la génération audio",
+          "Personnalisations possibles"
+        ];
+        nextSteps = [
+          "Générer l'audio",
+          "Télécharger le fichier",
+          "Nouvelles variations"
+        ];
+        break;
+    }
 
     return {
       needsMoreInfo,
       missingInfo,
-      collectedInfo,
-      suggestions: needsMoreInfo ? [
-        "Répondez à la question posée par l'assistant",
-        "L'assistant se souvient de ce que vous avez déjà dit",
-        "Soyez précis dans vos réponses"
-      ] : [
-        "L'assistant va générer votre audio",
-        "Toutes les informations semblent collectées",
-        "Vous pourrez ensuite l'écouter et le télécharger"
-      ],
-      nextSteps: needsMoreInfo ? [
-        "Répondre à la question",
-        "Fournir les informations demandées"
-      ] : [
-        "Confirmer la génération",
-        "Générer l'audio",
-        "Écouter le résultat"
-      ],
-      canProceed: !needsMoreInfo || readyToGenerate,
+      suggestions,
+      nextSteps,
+      canProceed,
       readyToGenerate
     };
   }
@@ -270,13 +210,13 @@ Réponds toujours en français avec un ton expert mais accessible.`;
   }
 
   /**
-   * Endpoint pour vider l'historique d'une session (optionnel)
+   * Endpoint pour vider l'historique d'une session
    */
   static async clearHistory(request: Request, response: Response): Promise<void> {
     try {
       const { sessionId } = request.body;
-      if (sessionId && conversationMemory.has(sessionId)) {
-        conversationMemory.delete(sessionId);
+      if (sessionId) {
+        audioAgent.clearHistory(sessionId);
         console.log("🗑️ Historique supprimé pour session:", sessionId);
       }
       response.json({ success: true, message: "Historique supprimé" });
