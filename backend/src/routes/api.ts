@@ -10,5 +10,18 @@ export default function (router: Router) {
     AudioController.generateAudio
   )
 
+  router.post(
+      "/audio-agent/chat",
+      validateContract(AudioAgentChatContract),
+      AudioAgentController.chat
+  );
+
+  // Génération complète d'un projet audio
+  router.post(
+      "/audio-agent/generate-project",
+      validateContract(AudioProjectContract),
+      AudioAgentController.generateProject
+  );
+
   return router;
 }

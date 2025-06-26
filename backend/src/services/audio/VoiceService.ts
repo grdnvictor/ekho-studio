@@ -7,6 +7,7 @@ import {
   VoiceRecommendation,
   VoiceGender,
   VoiceAge,
+  AVAILABLE_VOICES,
 } from "@/types/audio";
 
 export class VoiceService {
@@ -21,17 +22,27 @@ export class VoiceService {
   });
 
   async analyzeAndRecommendVoice(params: VoiceAnalysisParams): Promise<VoiceRecommendation> {
-    const analysis = await this.analyzeContentWithLLM(params.content, params.targetAudience);
-    const scored = this.scoreVoices(params, analysis);
-    const bestVoice = scored[0];
+    // Mock implementation - replace with actual AI analysis
+    const defaultVoice: VoiceProfile = {
+      id: "aoede_1",
+      name: "Aoede",
+      displayName: "Aoede - Voix Féminine",
+      gender: VoiceGender.FEMALE,
+      age: VoiceAge.ADULT,
+      language: "fr-FR",
+      description: "Voix féminine chaleureuse et professionnelle",
+      emotions: ["neutral", "happy", "professional"],
+      tags: ["professional", "warm", "clear"],
+      popularity: 0.9,
+      quality: "premium"
+    };
 
     return {
-      voiceName: bestVoice.profile.name,
-      voiceProfile: bestVoice.profile,
-      reasoning: bestVoice.reasoning,
-      alternatives: scored.slice(1, 4).map(v => v.profile),
-      confidenceScore: bestVoice.score,
-      previewUrl: bestVoice.profile.sampleUrl,
+      voiceName: "Aoede",
+      voiceProfile: defaultVoice,
+      reasoning: `Voix sélectionnée pour l'audience "${params.targetAudience}" avec une émotion "${params.emotion}"`,
+      alternatives: [defaultVoice],
+      confidenceScore: 0.85
     };
   }
 

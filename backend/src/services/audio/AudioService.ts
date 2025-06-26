@@ -8,6 +8,7 @@ import {
   ScriptResult,
   ContentOptimizationParams,
   OptimizationResult,
+  AudioMetadata,
 } from "@/types/audio";
 
 export class AudioService {
@@ -25,22 +26,23 @@ export class AudioService {
   }
 
   async generateAudio(params: AudioGenerationParams): Promise<AudioResult> {
-    // Simulation audio locale
-    const audioUrl = await this.simulateAudioGeneration(params);
+    // Mock implementation - replace with actual API call
+    const metadata: AudioMetadata = {
+      format: "mp3",
+      bitrate: 128000,
+      sampleRate: 44100,
+      channels: 2,
+      generatedAt: new Date(),
+      processingTime: 2500
+    };
+
     return {
-      url: audioUrl,
-      duration: this.estimateDuration(params.text),
+      url: `https://example.com/audio/${Date.now()}.mp3`,
+      duration: Math.floor(params.text.length / 15), // Rough estimate
       quality: "high",
-      fileSize: 1024 * 1024,
-      downloadUrl: audioUrl,
-      metadata: {
-        format: "wav",
-        bitrate: 44100,
-        sampleRate: 44100,
-        channels: 1,
-        generatedAt: new Date(),
-        processingTime: 1000,
-      },
+      fileSize: params.text.length * 1024,
+      downloadUrl: `https://example.com/download/${Date.now()}.mp3`,
+      metadata
     };
   }
 
