@@ -105,9 +105,14 @@ export class AudioAgentController {
         collectedInfo: result.collectedInfo || [],
         phase: normalizedPhase,
 
-        // Informations audio
+        // Informations audio avec structure correcte pour le frontend
         audioGenerated: result.audioGenerated || false,
-        audioUrl: result.audioUrl || null,
+        audioData: result.audioGenerated && result.audioUrl ? {
+          url: result.audioUrl,
+          filename: result.audioUrl.split('/').pop() || 'audio.wav',
+          mimeType: 'audio/wav',
+          duration: result.sessionData?.duration || 10
+        } : null,
         context: result.sessionData || {},
 
         // Métadonnées de session
