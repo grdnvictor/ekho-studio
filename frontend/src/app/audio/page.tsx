@@ -122,7 +122,7 @@ export default function AudioPage() {
         setIsClient(true);
         setMessages([{
             id: '1',
-            content: "🎙️ Salut ! Je suis ton assistant audio d'Ekho Studio.\n\nDis-moi, quel type de contenu audio tu veux créer aujourd'hui ?",
+            content: "🎙️ Salut ! Je suis ton assistant audio d'Ekho Studio.\n\nDécris-moi ton projet complet en une fois : type de contenu, style de voix, public cible, et surtout le TEXTE à vocaliser. Plus tu donnes de détails d'un coup, plus vite on aura ton audio ! 🚀",
             sender: 'agent',
             timestamp: new Date(),
             phase: 'discovery'
@@ -681,15 +681,7 @@ export default function AudioPage() {
                                     value={textInput}
                                     onChange={(e) => setTextInput(e.target.value)}
                                     onKeyPress={handleKeyPress}
-                                    placeholder={
-                                        currentPhase === 'discovery'
-                                            ? "Dis-moi ton idée..."
-                                            : currentPhase === 'clarification'
-                                                ? "Réponds à l'assistant..."
-                                                : currentPhase === 'generation'
-                                                    ? "Confirme ou ajuste..."
-                                                    : "Écris ton message..."
-                                    }
+                                                                        placeholder="Ex: Pub radio professionnelle pour entreprise, texte: 'Découvrez nos services...'"
                                     className="pr-12 h-12 text-base bg-white border-gray-300 focus:border-purple-500 focus:ring-purple-500 rounded-full transition-all"
                                     disabled={isLoading}
                                 />
