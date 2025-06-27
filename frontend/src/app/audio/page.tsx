@@ -61,18 +61,11 @@ const PHASE_CONFIG = {
 };
 
 export default function AudioPage() {
+    // État pour éviter l'hydratation mismatch
+    const [isClient, setIsClient] = useState(false);
     const [textInput, setTextInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    const [messages, setMessages] = useState<Message[]>([
-        {
-            id: '1',
-            content: "🎙️ Bonjour ! Je suis votre assistant audio professionnel d'Ekho Studio.\n\nJe vais vous accompagner étape par étape pour créer un contenu audio parfaitement adapté à vos besoins.\n\nPour commencer, parlez-moi de votre projet : quel type de contenu audio souhaitez-vous créer ?",
-            sender: 'agent',
-            timestamp: new Date(),
-            phase: 'discovery'
-        }
-    ]);
-    const [sessionId] = useState(() => `session_${Date.now()}`);
+    const [sessionId] = useState(() => typeof window !== 'undefined' ? `session_${Date.now()}` : 'session_default');
     const [collectedInfo, setCollectedInfo] = useState<string[]>([]);
     const [currentPhase, setCurrentPhase] = useState<'discovery' | 'clarification' | 'generation' | 'complete'>('discovery');
     const [missingInfo, setMissingInfo] = useState<string[]>([]);
@@ -80,11 +73,78 @@ export default function AudioPage() {
     const [generatedAudios, setGeneratedAudios] = useState<string[]>([]);
     const [isPlaying, setIsPlaying] = useState<Record<string, boolean>>({});
 
+    // Messages initialisés côté client seulement
+    const [messages, setMessages] = useState<Message[]>([]);
+
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
     const audioRefs = useRef<Record<string, HTMLAudioElement>>({});
 
     const API_BASE_URL = 'http://localhost:3333';
+
+    // Fonction helper pour obtenir la config de phase de manière sécurisée
+    const getPhaseConfig = (phase: string | undefined) => {
+        if (!phase) return PHASE_CONFIG.discovery;
+
+        const validPhases = ['discovery', 'clarification', 'generation', 'complete'] as const;
+        const typedPhase = phase as keyof typeof PHASE_CONFIG;
+
+        if (validPhases.includes(typedPhase)) {
+            return PHASE_CONFIG[typedPhase];
+        }
+
+        console.warn(`Phase inconnue: ${phase}, utilisation de discovery par défaut`);
+        return PHASE_CONFIG.discovery;
+    };
+
+    // Fonction helper pour valider et normaliser les phases
+    const normalizePhase = (phase: string | undefined): 'discovery' | 'clarification' | 'generation' | 'complete' => {
+        if (!phase) return 'discovery';
+
+        const validPhases = ['discovery', 'clarification', 'generation', 'complete'] as const;
+        const lowerPhase = phase.toLowerCase();
+
+        // Mapping pour les variations courantes
+        const phaseMapping: Record<string, typeof validPhases[number]> = {
+            'step_1': 'discovery',
+            'step_2': 'clarification',
+            'step_3': 'clarification',
+            'step_4': 'clarification',
+            'step_5': 'generation',
+            'error': 'clarification',
+            'complete': 'complete',
+            'discovery': 'discovery',
+            'clarification': 'clarification',
+            'generation': 'generation'
+        };
+
+        if (phaseMapping[lowerPhase]) {
+            return phaseMapping[lowerPhase];
+        }
+
+        // Si ça commence par "step_", c'est probablement une phase de clarification
+        if (lowerPhase.startsWith('step_')) {
+            const stepNumber = parseInt(lowerPhase.replace('step_', ''));
+            if (stepNumber === 1) return 'discovery';
+            if (stepNumber >= 2 && stepNumber <= 4) return 'clarification';
+            if (stepNumber >= 5) return 'generation';
+        }
+
+        console.warn(`Phase non reconnue: ${phase}, utilisation de discovery par défaut`);
+        return 'discovery';
+    };
+
+    // Initialisation côté client uniquement
+    useEffect(() => {
+        setIsClient(true);
+        setMessages([{
+            id: '1',
+            content: "🎙️ Bonjour ! Je suis votre assistant audio professionnel d'Ekho Studio.\n\nJe vais vous aider à créer votre audio professionnel en 5 étapes simples.\n\nPour commencer, parlez-moi de votre projet : quel type de contenu audio souhaitez-vous créer ?",
+            sender: 'agent',
+            timestamp: new Date(),
+            phase: 'discovery'
+        }]);
+    }, []);
 
     // Scroll automatique vers le bas
     const scrollToBottom = () => {
@@ -92,13 +152,17 @@ export default function AudioPage() {
     };
 
     useEffect(() => {
-        scrollToBottom();
-    }, [messages]);
+        if (isClient) {
+            scrollToBottom();
+        }
+    }, [messages, isClient]);
 
     // Focus sur l'input
     useEffect(() => {
-        inputRef.current?.focus();
-    }, []);
+        if (isClient && inputRef.current) {
+            inputRef.current.focus();
+        }
+    }, [isClient]);
 
     const handleKeyPress = (event: React.KeyboardEvent) => {
         if (event.key === 'Enter' && !event.shiftKey) {
@@ -162,7 +226,6 @@ export default function AudioPage() {
                 body: JSON.stringify({
                     message: text,
                     sessionId: sessionId,
-                    // Ne pas envoyer de contexte par défaut - laisser l'agent analyser
                 })
             });
 
@@ -174,24 +237,20 @@ export default function AudioPage() {
 
             if (result.success) {
                 // Extraire l'URL audio de la réponse si présente
-                let audioUrl: string | null = null;
+                let audioUrl = null;
                 if (result.audioGenerated && result.audioUrl) {
                     audioUrl = result.audioUrl;
-                    // @ts-ignore
                     setGeneratedAudios(prev => [...prev, audioUrl]);
                 } else if (result.response && typeof result.response === 'string') {
                     // Chercher une URL d'audio dans le texte de réponse
                     const audioUrlMatch = result.response.match(/https?:\/\/[^\s]+\/audio\/[^\s]+\.(wav|mp3|ogg)/);
                     if (audioUrlMatch) {
                         audioUrl = audioUrlMatch[0];
-                        // @ts-ignore
                         setGeneratedAudios(prev => [...prev, audioUrl]);
                     }
                 }
 
                 // Ajouter la réponse de l'agent
-                // @ts-ignore
-                // @ts-ignore
                 const agentMessage: Message = {
                     id: (Date.now() + 1).toString(),
                     content: result.response,
@@ -204,19 +263,19 @@ export default function AudioPage() {
                     collectedInfo: result.collectedInfo,
                     conversationLength: result.conversationLength,
                     phase: result.phase,
-                    //@ts-ignore
                     audioUrl: audioUrl,
                     audioGenerated: result.audioGenerated
                 };
 
                 setMessages(prev => [...prev, agentMessage]);
 
-                // Mettre à jour l'état global
+                // Mettre à jour l'état global avec validation robuste
                 if (result.collectedInfo) {
                     setCollectedInfo(result.collectedInfo);
                 }
                 if (result.phase) {
-                    setCurrentPhase(result.phase);
+                    const normalizedPhase = normalizePhase(result.phase);
+                    setCurrentPhase(normalizedPhase);
                 }
                 if (result.missingInfo) {
                     setMissingInfo(result.missingInfo);
@@ -247,6 +306,7 @@ export default function AudioPage() {
     };
 
     const formatTime = (date: Date) => {
+        if (!isClient) return '';
         return date.toLocaleTimeString('fr-FR', {
             hour: '2-digit',
             minute: '2-digit'
@@ -254,6 +314,8 @@ export default function AudioPage() {
     };
 
     const toggleAudioPlayback = (audioUrl: string) => {
+        if (!isClient) return;
+
         const audio = audioRefs.current[audioUrl];
         if (!audio) return;
 
@@ -276,16 +338,47 @@ export default function AudioPage() {
         }
     };
 
-    const downloadAudio = (audioUrl: string) => {
-        const link = document.createElement('a');
-        link.href = audioUrl;
-        link.download = `audio_${Date.now()}.wav`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    const downloadAudio = async (audioUrl: string, customName?: string) => {
+        if (!isClient) return;
+
+        try {
+            // Extraire le nom du fichier de l'URL
+            const urlParts = audioUrl.split('/');
+            const fileName = urlParts[urlParts.length - 1];
+            const finalName = customName || `ekho_audio_${Date.now()}.wav`;
+
+            // Créer un lien de téléchargement
+            const link = document.createElement('a');
+            link.href = audioUrl;
+            link.download = finalName;
+            link.target = '_blank';
+
+            // Forcer le téléchargement
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            console.log('📥 Téléchargement démarré:', finalName);
+        } catch (error) {
+            console.error('❌ Erreur lors du téléchargement:', error);
+            // Fallback: ouvrir dans un nouvel onglet
+            window.open(audioUrl, '_blank');
+        }
     };
 
-    const phaseConfig = PHASE_CONFIG[currentPhase];
+    // Ne pas rendre le contenu tant que l'hydratation n'est pas terminée
+    if (!isClient) {
+        return (
+            <div className="min-h-screen bg-gradient-to-br from-[#667eea] to-[#764ba2] p-4 flex items-center justify-center">
+                <div className="text-white text-lg flex items-center gap-2">
+                    <Loader2 className="h-6 w-6 animate-spin" />
+                    Chargement d&apos;Ekho Studio...
+                </div>
+            </div>
+        );
+    }
+
+    const phaseConfig = getPhaseConfig(currentPhase);
     const PhaseIcon = phaseConfig.icon;
 
     return (
@@ -401,7 +494,7 @@ export default function AudioPage() {
                     </Card>
 
                     {/* Audios générés */}
-                    {generatedAudios.length > 0 && (
+                    {isClient && generatedAudios.length > 0 && (
                         <Card className="bg-white/95 backdrop-blur shadow-xl border-0">
                             <CardHeader className="pb-3">
                                 <CardTitle className="text-lg font-bold text-gray-800 flex items-center gap-2">
@@ -410,48 +503,112 @@ export default function AudioPage() {
                                 </CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-3">
-                                {generatedAudios.map((audioUrl, index) => (
-                                    <div key={audioUrl} className="p-3 bg-purple-50 rounded-lg border border-purple-200">
-                                        <div className="flex items-center justify-between mb-2">
-                                            <span className="text-sm font-medium text-purple-800">
-                                                Audio #{index + 1}
-                                            </span>
-                                            <div className="flex gap-1">
-                                                <Button
-                                                    size="sm"
-                                                    variant="outline"
-                                                    onClick={() => toggleAudioPlayback(audioUrl)}
-                                                    className="h-8 w-8 p-0"
+                                {generatedAudios.map((audioUrl, index) => {
+                                    const audioName = `Audio #${index + 1}`;
+                                    const timestamp = new Date().toLocaleString('fr-FR');
+
+                                    return (
+                                        <div key={`audio-${audioUrl}-${index}`} className="p-4 bg-gradient-to-r from-purple-50 to-blue-50 rounded-lg border border-purple-200">
+                                            <div className="flex items-center justify-between mb-3">
+                                                <div>
+                                                    <span className="text-sm font-semibold text-purple-800">
+                                                        {audioName}
+                                                    </span>
+                                                    <p className="text-xs text-gray-600 mt-1">
+                                                        Créé le {timestamp}
+                                                    </p>
+                                                </div>
+                                                <div className="flex gap-2">
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        onClick={() => toggleAudioPlayback(audioUrl)}
+                                                        className="h-8 px-3 border-purple-300 text-purple-700 hover:bg-purple-100"
+                                                    >
+                                                        {isPlaying[audioUrl] ? (
+                                                            <>
+                                                                <Pause className="w-3 h-3 mr-1" />
+                                                                Pause
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <Play className="w-3 h-3 mr-1" />
+                                                                Lire
+                                                            </>
+                                                        )}
+                                                    </Button>
+                                                    <Button
+                                                        size="sm"
+                                                        onClick={() => downloadAudio(audioUrl, `ekho_${audioName.toLowerCase().replace(/\s/g, '_')}_${Date.now()}.wav`)}
+                                                        className="h-8 px-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white"
+                                                    >
+                                                        <Download className="w-3 h-3 mr-1" />
+                                                        Télécharger
+                                                    </Button>
+                                                </div>
+                                            </div>
+
+                                            {/* Lecteur audio */}
+                                            <div className="bg-white rounded-lg p-3 border border-purple-200">
+                                                <audio
+                                                    ref={el => {
+                                                        if (el) audioRefs.current[audioUrl] = el;
+                                                    }}
+                                                    src={audioUrl}
+                                                    onEnded={() => setIsPlaying(prev => ({ ...prev, [audioUrl]: false }))}
+                                                    onPlay={() => setIsPlaying(prev => ({ ...prev, [audioUrl]: true }))}
+                                                    onPause={() => setIsPlaying(prev => ({ ...prev, [audioUrl]: false }))}
+                                                    className="w-full h-8"
+                                                    controls
+                                                    controlsList="nodownload noplaybackrate"
+                                                    style={{
+                                                        colorScheme: 'light',
+                                                        accentColor: '#9333ea'
+                                                    }}
                                                 >
-                                                    {isPlaying[audioUrl] ? (
-                                                        <Pause className="w-3 h-3" />
-                                                    ) : (
-                                                        <Play className="w-3 h-3" />
-                                                    )}
-                                                </Button>
-                                                <Button
-                                                    size="sm"
-                                                    variant="outline"
-                                                    onClick={() => downloadAudio(audioUrl)}
-                                                    className="h-8 w-8 p-0"
-                                                >
-                                                    <Download className="w-3 h-3" />
-                                                </Button>
+                                                    Votre navigateur ne supporte pas l&apos;audio HTML5.
+                                                </audio>
+
+                                                {/* Métadonnées de l'audio */}
+                                                <div className="mt-2 flex items-center justify-between text-xs text-gray-600">
+                                                    <div className="flex items-center gap-4">
+                                                        <span>📁 Format: WAV</span>
+                                                        <span>🎵 Qualité: Haute</span>
+                                                        <span>🔊 Prêt à télécharger</span>
+                                                    </div>
+                                                    <Button
+                                                        size="sm"
+                                                        variant="ghost"
+                                                        onClick={() => downloadAudio(audioUrl, `ekho_${audioName.toLowerCase().replace(/\s/g, '_')}_${Date.now()}.wav`)}
+                                                        className="h-6 px-2 text-purple-600 hover:text-purple-800 hover:bg-purple-100"
+                                                    >
+                                                        <Download className="w-3 h-3 mr-1" />
+                                                        WAV
+                                                    </Button>
+                                                </div>
                                             </div>
                                         </div>
-                                        <audio
-                                            ref={el => {
-                                                if (el) audioRefs.current[audioUrl] = el;
+                                    );
+                                })}
+
+                                {/* Bouton pour télécharger tous les audios */}
+                                {generatedAudios.length > 1 && (
+                                    <div className="pt-3 border-t border-purple-200">
+                                        <Button
+                                            onClick={() => {
+                                                generatedAudios.forEach((audioUrl, index) => {
+                                                    setTimeout(() => {
+                                                        downloadAudio(audioUrl, `ekho_audio_${index + 1}_${Date.now()}.wav`);
+                                                    }, index * 500);
+                                                });
                                             }}
-                                            src={audioUrl}
-                                            onEnded={() => setIsPlaying(prev => ({ ...prev, [audioUrl]: false }))}
-                                            onPlay={() => setIsPlaying(prev => ({ ...prev, [audioUrl]: true }))}
-                                            onPause={() => setIsPlaying(prev => ({ ...prev, [audioUrl]: false }))}
-                                            className="w-full h-8"
-                                            controls
-                                        />
+                                            className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white"
+                                        >
+                                            <Download className="w-4 h-4 mr-2" />
+                                            Télécharger tous les audios ({generatedAudios.length})
+                                        </Button>
                                     </div>
-                                ))}
+                                )}
                             </CardContent>
                         </Card>
                     )}
@@ -542,7 +699,7 @@ export default function AudioPage() {
                                                     className="w-full h-8"
                                                     style={{ colorScheme: message.sender === 'user' ? 'dark' : 'light' }}
                                                 >
-                                                    Votre navigateur ne supporte pas l'audio HTML5.
+                                                    Votre navigateur ne supporte pas l&apos;audio HTML5.
                                                 </audio>
                                             </div>
                                         )}
@@ -607,7 +764,7 @@ export default function AudioPage() {
                                     <div className="bg-gray-100 rounded-2xl px-4 py-3">
                                         <div className="flex items-center gap-2 text-gray-600">
                                             <Loader2 className="h-4 w-4 animate-spin" />
-                                            <span className="text-sm">L'assistant analyse votre demande...</span>
+                                            <span className="text-sm">L&apos;assistant analyse votre demande...</span>
                                         </div>
                                     </div>
                                 </div>

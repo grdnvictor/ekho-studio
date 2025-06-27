@@ -13,6 +13,7 @@ import {
   OptimizationResult,
   AudioMetadata,
 } from "@/types/audio";
+import { TextCleanupUtility } from "@/utils/TextCleanupUtility";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -117,41 +118,56 @@ export class AudioService {
   private enhanceTextForTTS(text: string, params: AudioGenerationParams): string {
     let enhancedText = text;
 
-    // Nettoyer le texte
-    enhancedText = enhancedText.trim();
+    // Nettoyer le texte des indications parasites
+    enhancedText = this.cleanTextForTTS(enhancedText);
 
-    // Ajouter des pauses naturelles
-    enhancedText = enhancedText.replace(/\. /g, '. <break time="0.5s"/> ');
-    enhancedText = enhancedText.replace(/\, /g, ', <break time="0.2s"/> ');
-    enhancedText = enhancedText.replace(/\! /g, '! <break time="0.6s"/> ');
-    enhancedText = enhancedText.replace(/\? /g, '? <break time="0.6s"/> ');
-
-    // Appliquer l'émotion si spécifiée
-    if (params.emotion && params.emotion !== 'neutral') {
-      const emotionMappings = {
-        'happy': 'avec joie et enthousiasme',
-        'calm': 'de manière calme et posée',
-        'professional': 'avec un ton professionnel',
-        'warm': 'avec chaleur et bienveillance',
-        'energetic': 'avec énergie et dynamisme',
-        'dramatic': 'de manière dramatique'
-      };
-
-      const emotionDesc = emotionMappings[params.emotion] || params.emotion;
-      enhancedText = `[Parlez ${emotionDesc}] ${enhancedText}`;
+    // Ajouter des pauses naturelles uniquement si ce n'est pas déjà fait
+    if (!enhancedText.includes('<break')) {
+      enhancedText = enhancedText.replace(/\. /g, '. <break time="0.3s"/> ');
+      enhancedText = enhancedText.replace(/\, /g, ', <break time="0.1s"/> ');
+      enhancedText = enhancedText.replace(/\! /g, '! <break time="0.4s"/> ');
+      enhancedText = enhancedText.replace(/\? /g, '? <break time="0.4s"/> ');
     }
 
-    // Appliquer la vitesse si différente de 1
-    if (params.speed && params.speed !== 1) {
-      if (params.speed > 1) {
-        enhancedText = `[Parlez plus rapidement] ${enhancedText}`;
-      } else if (params.speed < 1) {
-        enhancedText = `[Parlez plus lentement] ${enhancedText}`;
-      }
-    }
-
-    console.log("📝 Texte optimisé pour TTS:", enhancedText.slice(0, 100));
+    // Appliquer les modifications de style via les paramètres Gemini plutôt que dans le texte
+    console.log("📝 Texte nettoyé pour TTS:", enhancedText.slice(0, 100));
     return enhancedText;
+  }
+
+  /**
+   * Nettoie le texte des éléments parasites pour la synthèse vocale
+   */
+  private cleanTextForTTS(text: string): string {
+    let cleanedText = text;
+
+    // Supprimer les indications entre crochets
+    cleanedText = cleanedText.replace(/\[.*?\]/g, '');
+
+    // Supprimer les indications de style/émotion communes
+    cleanedText = cleanedText.replace(/\(.*?émotion.*?\)/gi, '');
+    cleanedText = cleanedText.replace(/\(.*?style.*?\)/gi, '');
+    cleanedText = cleanedText.replace(/\(.*?ton.*?\)/gi, '');
+    cleanedText = cleanedText.replace(/\(.*?voix.*?\)/gi, '');
+    cleanedText = cleanedText.replace(/\(.*?vitesse.*?\)/gi, '');
+
+    // Supprimer les instructions de direction
+    cleanedText = cleanedText.replace(/Parlez\s+.*?(?=\s|$)/gi, '');
+    cleanedText = cleanedText.replace(/Dites\s+.*?(?=\s|$)/gi, '');
+    cleanedText = cleanedText.replace(/Lisez\s+.*?(?=\s|$)/gi, '');
+
+    // Supprimer les métadonnées communes
+    cleanedText = cleanedText.replace(/Durée\s*:\s*\d+.*?(?=\s|$)/gi, '');
+    cleanedText = cleanedText.replace(/Audience\s*:\s*.*?(?=\s|$)/gi, '');
+    cleanedText = cleanedText.replace(/Public\s*:\s*.*?(?=\s|$)/gi, '');
+
+    // Supprimer les doubles espaces et nettoyer
+    cleanedText = cleanedText.replace(/\s+/g, ' ');
+    cleanedText = cleanedText.trim();
+
+    // Si le texte commence par des indications, les supprimer
+    cleanedText = cleanedText.replace(/^(avec|de manière|sur un ton).*?[,:]?\s*/i, '');
+
+    return cleanedText;
   }
 
   /**
@@ -187,6 +203,7 @@ export class AudioService {
     }
 
     // Puis chercher dans le mapping
+    // @ts-ignore
     const mappedVoice = voiceMapping[voiceName];
     if (mappedVoice && this.isValidGeminiVoice(mappedVoice)) {
       return mappedVoice;
@@ -223,14 +240,28 @@ export class AudioService {
     let audioChunks: Buffer[] = [];
     let totalDuration = 0;
     let totalSize = 0;
+    let hasAudioData = false;
 
     try {
       for await (const chunk of response) {
+        console.log("📦 Chunk reçu:", {
+          hasCandidates: !!chunk.candidates,
+          candidatesLength: chunk.candidates?.length || 0,
+          hasContent: !!chunk.candidates?.[0]?.content,
+          hasInlineData: !!chunk.candidates?.[0]?.content?.parts?.[0]?.inlineData
+        });
+
         if (chunk.candidates?.[0]?.content?.parts?.[0]?.inlineData) {
           const inlineData = chunk.candidates[0].content.parts[0].inlineData;
-          console.log("🎵 Données audio trouvées, MIME:", inlineData.mimeType);
+          console.log("🎵 Données audio trouvées:", {
+            mimeType: inlineData.mimeType,
+            hasData: !!inlineData.data,
+            dataLength: inlineData.data?.length || 0
+          });
 
-          if (inlineData.data) {
+          if (inlineData.data && inlineData.data.length > 0) {
+            hasAudioData = true;
+
             // Décoder les données base64
             const rawAudioData = Buffer.from(inlineData.data, "base64");
 
@@ -239,14 +270,22 @@ export class AudioService {
             audioChunks.push(wavBuffer);
 
             totalSize += wavBuffer.length;
+            console.log("✅ Chunk audio traité:", {
+              rawSize: rawAudioData.length,
+              wavSize: wavBuffer.length,
+              totalChunks: audioChunks.length
+            });
           }
         } else if (chunk.text) {
           console.log("📝 Texte reçu:", chunk.text);
+        } else {
+          console.log("📦 Chunk sans données audio reconnues");
         }
       }
 
-      if (audioChunks.length === 0) {
-        throw new Error("Aucune donnée audio générée");
+      if (!hasAudioData || audioChunks.length === 0) {
+        console.error("❌ Aucune donnée audio trouvée dans la réponse");
+        throw new Error("Aucune donnée audio générée - le modèle n'a pas produit d'audio");
       }
 
       // Combiner tous les chunks audio
@@ -255,7 +294,7 @@ export class AudioService {
 
       // Sauvegarder le fichier
       fs.writeFileSync(filepath, finalAudioBuffer);
-      console.log("💾 Fichier audio sauvegardé:", filepath);
+      console.log("💾 Fichier audio sauvegardé:", filepath, `(${finalAudioBuffer.length} bytes)`);
 
       // Calculer la durée estimée
       totalDuration = this.estimateDuration(params.text, params.speed || 1);
@@ -271,17 +310,23 @@ export class AudioService {
 
       const audioUrl = `http://localhost:3333/audio/${filename}`;
 
+      console.log("🎉 Audio traité avec succès:", {
+        url: audioUrl,
+        duration: totalDuration,
+        fileSize: finalAudioBuffer.length
+      });
+
       return {
         url: audioUrl,
         duration: totalDuration,
         quality: "high",
-        fileSize: totalSize,
+        fileSize: finalAudioBuffer.length,
         downloadUrl: audioUrl,
         metadata
       };
 
     } catch (error) {
-      console.error("❌ Erreur traitement réponse:", error);
+      console.error("❌ Erreur traitement réponse Gemini:", error);
       throw error;
     }
   }

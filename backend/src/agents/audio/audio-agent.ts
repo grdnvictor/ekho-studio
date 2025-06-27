@@ -4,15 +4,16 @@ import { ChatOpenAI } from "@langchain/openai";
 import { MemorySaver } from "@langchain/langgraph";
 import { SystemMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
 import { audioGenerationTool } from "./tools/audio-generation";
+import { recommendVoice } from "../../services/audio/VoiceGuide";
 
-console.log("🚀 Initialisation de l'agent audio intelligent...");
+console.log("🚀 Initialisation de l'agent audio structuré...");
 
 // URL de LM Studio depuis la variable d'environnement
 const LM_STUDIO_URL = process.env.LM_STUDIO_URL || 'http://localhost:1234/v1';
 console.log("🌍 URL LM Studio:", LM_STUDIO_URL);
 
 const agentModel = new ChatOpenAI({
-  temperature: 0.7,
+  temperature: 0.3, // Plus bas pour des réponses plus cohérentes
   model: "local-model",
   apiKey: "lm-studio",
   configuration: {
@@ -23,482 +24,388 @@ const agentModel = new ChatOpenAI({
 // Ajouter les outils à l'agent
 const agentWithTools = agentModel.bindTools([audioGenerationTool]);
 
-const agentCheckpointer = new MemorySaver();
-
-// Interface pour le contexte de conversation amélioré
-interface ConversationContext {
-  textContent?: string;
-  voicePreference?: string;
-  emotionStyle?: string;
-  targetAudience?: string;
+// Interface pour les données collectées étape par étape
+interface CollectedData {
+  step: number;
   projectType?: string;
-  duration?: number;
-  speed?: number;
-  additionalRequirements?: string[];
+  textContent?: string;
+  targetAudience?: string;
+  voiceGender?: string;
+  emotionStyle?: string;
+  isComplete: boolean;
 }
 
-// Stockage en mémoire des conversations avec contexte
-const conversationStore = new Map<string, {
-  messages: any[];
-  context: ConversationContext;
-}>();
+// Interface pour une étape du processus
+interface ProcessStep {
+  name: string;
+  question: string;
+  validate: (answer: string) => boolean;
+  process: (answer: string, data: CollectedData) => void;
+}
+
+// Interface pour la réponse de l'agent
+interface AgentResponse {
+  messages: AIMessage[];
+  conversationState: {
+    phase: string;
+    step: number;
+  };
+  historyLength: number;
+  audioGenerated: boolean;
+  audioUrl?: string;
+  collectedInfo?: string[];
+  sessionData?: CollectedData;
+}
+
+// Stockage en mémoire des sessions avec progression étape par étape
+const sessionStore = new Map<string, CollectedData>();
+
+// Définition des étapes structurées
+const STEPS: Record<number, ProcessStep> = {
+  1: {
+    name: "Type de projet",
+    question: "Quel type de contenu audio souhaitez-vous créer ?\n\n• Publicité radio\n• Formation/E-learning\n• Podcast\n• Documentaire\n• Présentation\n• Autre\n\nRépondez simplement par le type qui vous intéresse.",
+    validate: (answer: string): boolean => answer.length > 2,
+    process: (answer: string, data: CollectedData): void => {
+      const lower = answer.toLowerCase();
+      if (lower.includes('pub') || lower.includes('radio')) {
+        data.projectType = 'publicité radio';
+      } else if (lower.includes('formation') || lower.includes('learning')) {
+        data.projectType = 'formation';
+      } else if (lower.includes('podcast')) {
+        data.projectType = 'podcast';
+      } else if (lower.includes('documentaire')) {
+        data.projectType = 'documentaire';
+      } else if (lower.includes('présentation')) {
+        data.projectType = 'présentation';
+      } else {
+        data.projectType = answer.trim();
+      }
+    }
+  },
+  2: {
+    name: "Contenu à vocaliser",
+    question: "Parfait ! Maintenant, quel est le texte exact que vous souhaitez faire vocaliser ?\n\nÉcrivez simplement votre texte ci-dessous :",
+    validate: (answer: string): boolean => answer.length > 10,
+    process: (answer: string, data: CollectedData): void => {
+      data.textContent = answer.trim();
+    }
+  },
+  3: {
+    name: "Public cible",
+    question: "Excellent ! Qui est votre public cible ?\n\n• Enfants (moins de 12 ans)\n• Adolescents (12-18 ans)\n• Jeunes adultes (18-35 ans)\n• Adultes (35-55 ans)\n• Seniors (55+ ans)\n• Professionnels\n• Grand public\n\nRépondez simplement par la catégorie qui correspond.",
+    validate: (answer: string): boolean => answer.length > 2,
+    process: (answer: string, data: CollectedData): void => {
+      const lower = answer.toLowerCase();
+      if (lower.includes('enfant')) {
+        data.targetAudience = 'enfants';
+      } else if (lower.includes('ado') || lower.includes('12-18')) {
+        data.targetAudience = 'adolescents';
+      } else if (lower.includes('jeune') || lower.includes('18-35')) {
+        data.targetAudience = 'jeunes adultes';
+      } else if (lower.includes('adulte') || lower.includes('35-55')) {
+        data.targetAudience = 'adultes';
+      } else if (lower.includes('senior') || lower.includes('55')) {
+        data.targetAudience = 'seniors';
+      } else if (lower.includes('professionnel')) {
+        data.targetAudience = 'professionnels';
+      } else if (lower.includes('grand public')) {
+        data.targetAudience = 'grand public';
+      } else {
+        data.targetAudience = answer.trim();
+      }
+    }
+  },
+  4: {
+    name: "Type de voix",
+    question: "Quel type de voix préférez-vous ?\n\n• Voix masculine\n• Voix féminine\n• Peu importe\n\nRépondez simplement par votre préférence.",
+    validate: (answer: string): boolean => answer.length > 2,
+    process: (answer: string, data: CollectedData): void => {
+      const lower = answer.toLowerCase();
+      if (lower.includes('masculin') || lower.includes('homme')) {
+        data.voiceGender = 'masculine';
+      } else if (lower.includes('féminin') || lower.includes('femme')) {
+        data.voiceGender = 'feminine';
+      } else {
+        data.voiceGender = 'neutral';
+      }
+    }
+  },
+  5: {
+    name: "Style et émotion",
+    question: "Dernière question ! Quel style souhaitez-vous pour votre audio ?\n\n• Professionnel et neutre\n• Chaleureux et amical\n• Dynamique et énergique\n• Calme et posé\n• Dramatique et expressif\n\nRépondez par le style qui vous correspond.",
+    validate: (answer: string): boolean => answer.length > 2,
+    process: (answer: string, data: CollectedData): void => {
+      const lower = answer.toLowerCase();
+      if (lower.includes('professionnel')) {
+        data.emotionStyle = 'professional';
+      } else if (lower.includes('chaleureux') || lower.includes('amical')) {
+        data.emotionStyle = 'warm';
+      } else if (lower.includes('dynamique') || lower.includes('énergique')) {
+        data.emotionStyle = 'energetic';
+      } else if (lower.includes('calme') || lower.includes('posé')) {
+        data.emotionStyle = 'calm';
+      } else if (lower.includes('dramatique') || lower.includes('expressif')) {
+        data.emotionStyle = 'dramatic';
+      } else {
+        data.emotionStyle = 'neutral';
+      }
+      data.isComplete = true;
+    }
+  }
+};
 
 export const audioAgent = {
-  async invoke(input: any, config: any) {
-    console.log("🤖 Agent invoke appelé avec:", {
-      messagesCount: input.messages?.length,
-      threadId: config.configurable?.thread_id
-    });
+  async invoke(input: any, config: any): Promise<AgentResponse> {
+    console.log("🤖 Agent structuré appelé");
 
-    const threadId = config.configurable?.thread_id;
+    const threadId: string = config.configurable?.thread_id;
     if (!threadId) {
       throw new Error("Thread ID manquant");
     }
 
-    // Récupérer ou initialiser l'historique et le contexte pour cette session
-    let sessionData = conversationStore.get(threadId) || {
-      messages: [],
-      context: {}
+    // Récupérer ou initialiser les données de session
+    let sessionData: CollectedData = sessionStore.get(threadId) || {
+      step: 1,
+      isComplete: false
     };
 
-    // Ajouter les nouveaux messages à l'historique
-    if (input.messages && input.messages.length > 0) {
-      const lastMessage = input.messages[input.messages.length - 1];
-      if (lastMessage._getType() === "human") {
-        sessionData.messages.push(lastMessage);
+    // Extraire le message utilisateur
+    const userMessage = input.messages?.[input.messages.length - 1];
+    const userText: string = userMessage?.content || '';
 
-        // Extraire et mettre à jour le contexte à partir du message
-        sessionData.context = this.updateContextFromMessage(
-          lastMessage.content,
-          sessionData.context,
-          sessionData.messages
-        );
-
-        conversationStore.set(threadId, sessionData);
-      }
-    }
-
-    console.log("📚 Session data:", {
-      messagesCount: sessionData.messages.length,
-      context: sessionData.context
+    console.log("📊 État session:", {
+      step: sessionData.step,
+      isComplete: sessionData.isComplete,
+      userMessage: userText.slice(0, 50)
     });
 
-    // Analyser l'état de la conversation avec le contexte enrichi
-    const conversationState = this.analyzeConversationStateWithContext(
-      sessionData.messages,
-      sessionData.context
-    );
-    console.log("🔍 État conversation enrichi:", conversationState);
-
-    // Générer le prompt système basé sur l'état et le contexte
-    const systemPrompt = this.generateContextualPrompt(conversationState, sessionData.context);
-
-    // Construire la conversation complète
-    const fullConversation = [
-      new SystemMessage(systemPrompt),
-      ...sessionData.messages
-    ];
-
-    console.log("📞 Envoi à LM Studio avec", fullConversation.length, "messages...");
-
     try {
-      // Déterminer si on doit générer de l'audio avec contexte enrichi
-      const shouldGenerateAudio = this.shouldTriggerGeneration(conversationState, sessionData.context);
+      // Si c'est le premier message, commencer par l'accueil
+      if (sessionData.step === 1 && !userText.includes('créer') && userText.length < 10) {
+        const welcomeMessage = new AIMessage(
+          "🎙️ Bonjour ! Je suis votre assistant audio d'Ekho Studio.\n\n" +
+          "Je vais vous aider à créer votre audio professionnel en 5 étapes simples.\n\n" +
+          STEPS[1].question
+        );
 
-      if (shouldGenerateAudio) {
-        console.log("🎵 Conditions réunies pour génération audio avec contexte");
+        return {
+          messages: [welcomeMessage],
+          conversationState: { phase: 'step_1', step: 1 },
+          historyLength: 1,
+          audioGenerated: false
+        };
+      }
 
-        try {
-          // Préparer les paramètres de génération basés sur le contexte
-          const generationParams = this.prepareGenerationParams(sessionData.context, sessionData.messages);
+      // Si toutes les étapes sont terminées, générer l'audio
+      if (sessionData.isComplete) {
+        console.log("🎵 Toutes les étapes terminées, génération audio...");
+        return await this.generateAudio(sessionData, threadId);
+      }
 
-          console.log("🎯 Génération audio avec paramètres:", generationParams);
+      // Traiter la réponse utilisateur pour l'étape actuelle
+      const currentStep: ProcessStep | undefined = STEPS[sessionData.step];
 
-          // Appeler l'outil de génération audio
-          const audioResult = await audioGenerationTool.invoke(generationParams);
+      if (currentStep && currentStep.validate(userText)) {
+        // Traiter la réponse
+        currentStep.process(userText, sessionData);
+        sessionData.step++;
 
-          console.log("✅ Résultat génération:", audioResult);
+        // Sauvegarder les données
+        sessionStore.set(threadId, sessionData);
 
-          if (audioResult.success) {
-            const audioResponse = new AIMessage(
-              `🎉 Parfait ! J'ai généré votre audio avec succès !\n\n` +
-              `📋 **Récapitulatif** :\n` +
-              `• Texte : "${generationParams.text.slice(0, 100)}${generationParams.text.length > 100 ? '...' : ''}"\n` +
-              `• Voix : ${generationParams.voiceName}\n` +
-              `• Style : ${generationParams.emotion || 'naturel'}\n` +
-              `• Vitesse : ${generationParams.speed}x\n` +
-              `• Durée : ~${audioResult.duration}s\n\n` +
-              `🎧 Vous pouvez maintenant écouter votre audio ci-dessous : ${audioResult.url}\n\n` +
-              `Si vous souhaitez des ajustements (vitesse, style, voix différente), faites-le moi savoir !`
-            );
+        console.log("✅ Étape", sessionData.step - 1, "validée:", {
+          projectType: sessionData.projectType,
+          textContent: sessionData.textContent?.slice(0, 30),
+          targetAudience: sessionData.targetAudience,
+          voiceGender: sessionData.voiceGender,
+          emotionStyle: sessionData.emotionStyle
+        });
 
-            sessionData.messages.push(audioResponse);
-            conversationStore.set(threadId, sessionData);
+        // Si toutes les étapes sont terminées, générer
+        if (sessionData.isComplete) {
+          console.log("🎯 Toutes les informations collectées, génération...");
+          return await this.generateAudio(sessionData, threadId);
+        }
 
-            return {
-              messages: [audioResponse],
-              conversationState: { ...conversationState, phase: 'complete' },
-              historyLength: sessionData.messages.length,
-              audioGenerated: true,
-              audioUrl: audioResult.url,
-              context: sessionData.context
-            };
-          } else {
-            throw new Error(audioResult.error || "Échec de génération");
-          }
-        } catch (audioError) {
-          console.error("❌ Erreur génération audio:", audioError);
-          const errorResponse = new AIMessage(
-            `❌ Je rencontre une difficulté technique pour générer l'audio. L'erreur est : ${audioError.message}\n\n` +
-            `Pouvons-nous réessayer ? Ou souhaitez-vous ajuster quelque chose ?`
+        // Passer à l'étape suivante
+        const nextStep: ProcessStep | undefined = STEPS[sessionData.step];
+        if (nextStep) {
+          const responseMessage = new AIMessage(
+            `✅ Parfait !\n\n**Étape ${sessionData.step}/5** - ${nextStep.name}\n\n${nextStep.question}`
           );
 
-          sessionData.messages.push(errorResponse);
-          conversationStore.set(threadId, sessionData);
-
           return {
-            messages: [errorResponse],
-            conversationState,
-            historyLength: sessionData.messages.length,
+            messages: [responseMessage],
+            conversationState: { phase: `step_${sessionData.step}`, step: sessionData.step },
+            historyLength: sessionData.step,
             audioGenerated: false,
-            context: sessionData.context
+            collectedInfo: this.getCollectedInfo(sessionData)
           };
         }
+      } else {
+        // Réponse invalide, redemander
+        const errorMessage = new AIMessage(
+          `❌ Je n'ai pas bien compris votre réponse.\n\n` +
+          `**Étape ${sessionData.step}/5** - ${currentStep?.name || 'Inconnue'}\n\n${currentStep?.question || 'Question non trouvée'}`
+        );
+
+        return {
+          messages: [errorMessage],
+          conversationState: { phase: `step_${sessionData.step}`, step: sessionData.step },
+          historyLength: sessionData.step,
+          audioGenerated: false
+        };
       }
 
-      // Réponse normale avec l'agent LLM
-      const response = await agentWithTools.invoke(fullConversation);
-      console.log("✅ Réponse reçue de LM Studio");
+      // Fallback si aucune condition n'est remplie
+      throw new Error("État de conversation non géré");
 
-      // Ajouter la réponse à l'historique
-      const aiResponse = new AIMessage(response.content as string);
-      sessionData.messages.push(aiResponse);
-      conversationStore.set(threadId, sessionData);
+    } catch (error: unknown) {
+      console.error("❌ Erreur dans l'agent:", error);
+      const errorMessage = new AIMessage(
+        "❌ Une erreur s'est produite. Recommençons depuis le début.\n\n" + STEPS[1].question
+      );
+
+      // Reset la session
+      sessionStore.set(threadId, { step: 1, isComplete: false });
 
       return {
-        messages: [response],
-        conversationState,
-        historyLength: sessionData.messages.length,
-        audioGenerated: false,
-        context: sessionData.context
+        messages: [errorMessage],
+        conversationState: { phase: 'step_1', step: 1 },
+        historyLength: 1,
+        audioGenerated: false
       };
-    } catch (error) {
-      console.error("❌ Erreur LM Studio:", error);
-      throw error;
     }
   },
 
-  /**
-   * Met à jour le contexte basé sur le message utilisateur
-   */
-  updateContextFromMessage(messageContent: string, currentContext: ConversationContext, messageHistory: any[]): ConversationContext {
-    const content = messageContent.toLowerCase();
-    const newContext = { ...currentContext };
+  async generateAudio(sessionData: CollectedData, threadId: string): Promise<AgentResponse> {
+    console.log("🎵 Génération audio avec données:", sessionData);
 
-    // Extraire le contenu à vocaliser
-    if (this.containsContentToVocalize(messageContent)) {
-      newContext.textContent = this.extractTextContent(messageContent, messageHistory);
-    }
-
-    // Détecter le type de projet
-    if (content.includes('radio') || content.includes('publicité')) {
-      newContext.projectType = 'radio';
-      newContext.targetAudience = 'grand public';
-    } else if (content.includes('formation') || content.includes('elearning') || content.includes('cours')) {
-      newContext.projectType = 'elearning';
-      newContext.targetAudience = 'apprenants';
-    } else if (content.includes('podcast')) {
-      newContext.projectType = 'podcast';
-    } else if (content.includes('documentaire')) {
-      newContext.projectType = 'documentaire';
-      newContext.emotionStyle = 'narratif';
-    }
-
-    // Détecter les préférences de voix
-    if (content.includes('masculin') || content.includes('homme')) {
-      newContext.voicePreference = 'achernar'; // Voix masculine forte
-    } else if (content.includes('féminin') || content.includes('femme')) {
-      newContext.voicePreference = 'aoede'; // Voix féminine chaleureuse
-    } else if (content.includes('jeune')) {
-      newContext.voicePreference = 'callirrhoe'; // Voix jeune
-    } else if (content.includes('mature') || content.includes('profonde')) {
-      newContext.voicePreference = 'charon'; // Voix profonde
-    }
-
-    // Détecter le style émotionnel
-    if (content.includes('chaleureux')) {
-      newContext.emotionStyle = 'warm';
-    } else if (content.includes('professionnel')) {
-      newContext.emotionStyle = 'professional';
-    } else if (content.includes('dynamique')) {
-      newContext.emotionStyle = 'energetic';
-    } else if (content.includes('calme')) {
-      newContext.emotionStyle = 'calm';
-    }
-
-    // Détecter la durée
-    const durationMatch = content.match(/(\d+)\s*(seconde|minute|s|min)/);
-    if (durationMatch) {
-      let duration = parseInt(durationMatch[1]);
-      if (durationMatch[2].includes('min')) {
-        duration *= 60;
+    try {
+      // Vérifier que toutes les données nécessaires sont présentes
+      if (!sessionData.textContent) {
+        throw new Error("Contenu textuel manquant");
       }
-      newContext.duration = duration;
-    }
 
-    // Détecter la vitesse
-    if (content.includes('rapide') || content.includes('vite')) {
-      newContext.speed = 1.2;
-    } else if (content.includes('lent') || content.includes('posé')) {
-      newContext.speed = 0.8;
-    }
+      // Choisir la voix optimale
+      const voiceName: string = this.selectOptimalVoice(sessionData);
 
-    // Détecter l'audience cible
-    if (content.includes('enfant') || content.includes('jeune')) {
-      newContext.targetAudience = 'jeunes';
-    } else if (content.includes('adulte') || content.includes('professionnel')) {
-      newContext.targetAudience = 'adultes professionnels';
-    }
+      // Préparer les paramètres
+      const generationParams = {
+        text: sessionData.textContent,
+        voiceName: voiceName,
+        emotion: sessionData.emotionStyle || 'neutral',
+        speed: 1.0,
+        effects: []
+      };
 
-    return newContext;
+      console.log("🎯 Paramètres génération:", generationParams);
+
+      // Générer l'audio
+      const audioResult = await audioGenerationTool.invoke(generationParams);
+
+      if (audioResult.success) {
+        const summaryMessage = new AIMessage(
+          `🎉 **Audio généré avec succès !**\n\n` +
+          `📋 **Récapitulatif de votre projet :**\n` +
+          `• **Type :** ${sessionData.projectType || 'Non spécifié'}\n` +
+          `• **Public :** ${sessionData.targetAudience || 'Non spécifié'}\n` +
+          `• **Voix :** ${this.getVoiceDisplayName(voiceName)}\n` +
+          `• **Style :** ${this.getStyleDisplayName(sessionData.emotionStyle || 'neutral')}\n` +
+          `• **Durée :** ~${('duration' in audioResult ? audioResult.duration : 0)}s\n\n` +
+          `🎧 Vous pouvez maintenant écouter et télécharger votre audio ci-dessus.\n\n` +
+          `💡 **Besoin de modifications ?** Tapez "nouveau" pour créer un autre audio ou "modifier [élément]" pour ajuster quelque chose.`
+        );
+
+        // Reset pour un nouveau projet
+        sessionStore.delete(threadId);
+
+        return {
+          messages: [summaryMessage],
+          conversationState: { phase: 'complete', step: 6 },
+          historyLength: 6,
+          audioGenerated: true,
+          audioUrl: ('url' in audioResult) ? audioResult.url : undefined,
+          sessionData: sessionData
+        };
+      } else {
+        throw new Error(('error' in audioResult ? audioResult.error : audioResult.message) || "Échec de génération");      }
+    } catch (error: unknown) {
+      console.error("❌ Erreur génération:", error);
+      const errorMessage = new AIMessage(
+        `❌ Désolé, une erreur s'est produite lors de la génération :\n${error instanceof Error ? error.message : 'Erreur inconnue'}\n\n` +
+        `Voulez-vous réessayer ? Tapez "oui" pour relancer ou "nouveau" pour recommencer.`
+      );
+
+      return {
+        messages: [errorMessage],
+        conversationState: { phase: 'error', step: sessionData.step },
+        historyLength: sessionData.step,
+        audioGenerated: false
+      };
+    }
   },
 
-  /**
-   * Vérifie si le message contient du contenu à vocaliser
-   */
-  containsContentToVocalize(content: string): boolean {
-    const indicators = [
-      'texte:', 'script:', 'contenu:', 'dire:', 'lire:',
-      'voici le texte', 'voici le contenu', 'voici le script'
-    ];
+  selectOptimalVoice(sessionData: CollectedData): string {
+    // Recommandation intelligente basée sur les données collectées
+    const recommendation: string = recommendVoice({
+      projectType: sessionData.projectType,
+      targetAudience: sessionData.targetAudience,
+      emotion: sessionData.emotionStyle,
+      gender: sessionData.voiceGender
+    });
 
-    const lowerContent = content.toLowerCase();
-    return indicators.some(indicator => lowerContent.includes(indicator)) ||
-      (content.length > 50 && !content.includes('?'));
+    console.log("🎤 Voix recommandée:", recommendation);
+    return recommendation;
   },
 
-  /**
-   * Extrait le texte à vocaliser
-   */
-  extractTextContent(messageContent: string, messageHistory: any[]): string {
-    // Chercher des patterns spécifiques
-    const patterns = [
-      /(?:texte|script|contenu|dire|lire)\s*:\s*(.+)/i,
-      /voici\s+(?:le\s+)?(?:texte|contenu|script)\s*:?\s*(.+)/i
-    ];
-
-    for (const pattern of patterns) {
-      const match = messageContent.match(pattern);
-      if (match) {
-        return match[1].trim();
-      }
-    }
-
-    // Si pas de pattern, prendre le message entier s'il est assez long
-    if (messageContent.length > 50 && !messageContent.includes('?')) {
-      return messageContent.trim();
-    }
-
-    // Fallback: chercher dans l'historique le message le plus long
-    const userMessages = messageHistory.filter(msg => msg._getType() === 'human');
-    const longestMessage = userMessages.reduce((longest, current) =>
-        current.content.length > longest.content.length ? current : longest,
-      { content: '' }
-    );
-
-    return longestMessage.content.length > 20 ? longestMessage.content : messageContent;
-  },
-
-  /**
-   * Analyse l'état de la conversation avec le contexte enrichi
-   */
-  analyzeConversationStateWithContext(history: any[], context: ConversationContext) {
-    const state = {
-      messageCount: history.length,
-      hasContent: !!context.textContent,
-      hasAudience: !!context.targetAudience,
-      hasVoice: !!context.voicePreference,
-      hasStyle: !!context.emotionStyle,
-      hasContext: !!context.projectType,
-      phase: 'discovery' as 'discovery' | 'clarification' | 'generation' | 'complete',
-      collectedInfo: [] as string[],
-      context
+  getVoiceDisplayName(voiceName: string): string {
+    const voiceDisplayNames: Record<string, string> = {
+      'aoede': 'Aoede (féminine chaleureuse)',
+      'achernar': 'Achernar (masculine forte)',
+      'callirrhoe': 'Callirrhoe (jeune féminine)',
+      'charon': 'Charon (masculine profonde)',
+      'despina': 'Despina (féminine moderne)',
+      'orus': 'Orus (masculine claire)',
+      'pulcherrima': 'Pulcherrima (féminine élégante)',
+      'vindemiatrix': 'Vindemiatrix (féminine expressive)',
+      'zephyr': 'Zephyr (neutre apaisante)',
+      'sadachbia': 'Sadachbia (neutre traditionnelle)',
+      'fenrir': 'Fenrir (masculine dramatique)'
     };
 
-    // Construire la liste des infos collectées
-    if (state.hasContent) state.collectedInfo.push('Contenu à vocaliser');
-    if (state.hasAudience) state.collectedInfo.push('Public cible');
-    if (state.hasVoice) state.collectedInfo.push('Type de voix');
-    if (state.hasStyle) state.collectedInfo.push('Style/émotion');
-    if (state.hasContext) state.collectedInfo.push('Type de projet');
-
-    // Déterminer la phase
-    const completedCount = [state.hasContent, state.hasAudience, state.hasVoice, state.hasStyle, state.hasContext]
-      .filter(Boolean).length;
-
-    if (completedCount === 0) {
-      state.phase = 'discovery';
-    } else if (completedCount < 3 || !state.hasContent) {
-      state.phase = 'clarification';
-    } else if (completedCount >= 3 && state.hasContent) {
-      state.phase = 'generation';
-    } else {
-      state.phase = 'complete';
-    }
-
-    return state;
+    return voiceDisplayNames[voiceName] || voiceName;
   },
 
-  /**
-   * Détermine si on doit déclencher la génération audio
-   */
-  shouldTriggerGeneration(state: any, context: ConversationContext): boolean {
-    return state.phase === 'generation' &&
-      state.hasContent &&
-      state.collectedInfo.length >= 3 &&
-      !!context.textContent;
-  },
-
-  /**
-   * Prépare les paramètres de génération basés sur le contexte
-   */
-  prepareGenerationParams(context: ConversationContext, messageHistory: any[]) {
-    return {
-      text: context.textContent || this.extractTextFromHistory(messageHistory),
-      voiceName: context.voicePreference || "aoede", // Voix par défaut fiable
-      emotion: context.emotionStyle || "neutral",
-      speed: context.speed || 1.0,
-      effects: []
+  getStyleDisplayName(style: string): string {
+    const styleNames: Record<string, string> = {
+      'professional': 'Professionnel',
+      'warm': 'Chaleureux',
+      'energetic': 'Dynamique',
+      'calm': 'Calme',
+      'dramatic': 'Dramatique',
+      'neutral': 'Naturel'
     };
+
+    return styleNames[style] || style;
   },
 
-  /**
-   * Fallback pour extraire le texte depuis l'historique
-   */
-  extractTextFromHistory(history: any[]): string {
-    const userMessages = history.filter(msg => msg._getType() === 'human');
-
-    for (const message of userMessages.reverse()) {
-      if (message.content.length > 50 && !message.content.toLowerCase().includes('?')) {
-        return message.content.trim();
-      }
-    }
-
-    const longestMessage = userMessages.reduce((longest, current) =>
-        current.content.length > longest.content.length ? current : longest,
-      { content: 'Bonjour, voici un test audio.' }
-    );
-
-    return longestMessage.content;
-  },
-
-  /**
-   * Génère un prompt contextuel intelligent
-   */
-  generateContextualPrompt(state: any, context: ConversationContext): string {
-    const basePrompt = `Tu es l'Assistant Audio professionnel d'Ekho Studio, spécialisé dans la création de contenus audio de qualité.
-
-CONTEXTE ACTUEL:
-- Phase: ${state.phase}
-- Messages échangés: ${state.messageCount}
-- Informations collectées: ${state.collectedInfo.join(', ') || 'Aucune'}
-
-CONTEXTE DÉTECTÉ:
-${context.textContent ? `- Contenu: "${context.textContent.slice(0, 100)}..."` : ''}
-${context.projectType ? `- Type de projet: ${context.projectType}` : ''}
-${context.targetAudience ? `- Public cible: ${context.targetAudience}` : ''}
-${context.voicePreference ? `- Voix préférée: ${context.voicePreference}` : ''}
-${context.emotionStyle ? `- Style émotionnel: ${context.emotionStyle}` : ''}
-${context.duration ? `- Durée souhaitée: ${context.duration}s` : ''}
-
-MISSION: Aider l'utilisateur à créer du contenu audio professionnel étape par étape.
-
-IMPORTANT: Tu as accès à un outil de génération audio. Quand tu as assez d'informations (phase génération), tu peux proposer de créer l'audio immédiatement.`;
-
-    switch (state.phase) {
-      case 'discovery':
-        return `${basePrompt}
-
-PHASE DÉCOUVERTE - Premier contact
-Tu découvres les besoins de l'utilisateur pour la première fois.
-
-APPROCHE:
-- Sois accueillant et professionnel
-- Pose UNE question ouverte pour comprendre le projet global
-- Demande soit le contenu à vocaliser, soit le type de projet
-- Ne submerge pas avec trop de questions
-
-EXEMPLES DE QUESTIONS:
-- "Quel type de contenu audio souhaitez-vous créer ?"
-- "Avez-vous déjà un texte à vocaliser ou voulez-vous que je vous aide à le créer ?"
-- "Parlez-moi de votre projet audio"
-
-Reste conversationnel et évite les listes à puces.`;
-
-      case 'clarification':
-        const missingElements = [];
-        if (!state.hasContent) missingElements.push('- Le contenu exact à vocaliser');
-        if (!state.hasAudience) missingElements.push('- Le public cible (âge, contexte)');
-        if (!state.hasVoice) missingElements.push('- Le type de voix souhaité (masculin, féminin, etc.)');
-        if (!state.hasStyle) missingElements.push('- Le style/ton souhaité (professionnel, chaleureux, etc.)');
-        if (!state.hasContext) missingElements.push('- Le contexte d\'utilisation (radio, web, formation, etc.)');
-
-        return `${basePrompt}
-
-PHASE CLARIFICATION - Collecte d'informations
-L'utilisateur a donné quelques informations, il faut clarifier les détails manquants.
-
-INFORMATIONS ENCORE NÉCESSAIRES:
-${missingElements.join('\n')}
-
-APPROCHE:
-- Pose UNE SEULE question à la fois
-- Choisis l'information la plus importante manquante
-- Reste naturel et conversationnel
-- Explique pourquoi cette info est utile
-
-NE redemande JAMAIS ce qui a déjà été fourni !`;
-
-      case 'generation':
-        return `${basePrompt}
-
-PHASE GÉNÉRATION - Prêt à créer
-La plupart des informations sont collectées, il est temps de proposer la génération.
-
-INFORMATIONS COLLECTÉES: ${state.collectedInfo.join(', ')}
-
-APPROCHE:
-- Résume ce qui a été collecté
-- Propose de procéder à la génération IMMÉDIATEMENT
-- Sois confiant et enthousiaste
-- Annonce que l'audio va être créé
-
-IMPORTANT: Tu peux maintenant générer l'audio réellement ! L'outil va créer un fichier MP3/WAV que l'utilisateur pourra écouter.
-
-EXEMPLE: "Parfait ! J'ai toutes les informations nécessaires. Je vais créer votre audio [style] maintenant. Génération en cours..."`;
-
-      case 'complete':
-        return `${basePrompt}
-
-PHASE COMPLÈTE - Audio généré ou prêt
-L'audio a été généré ou toutes les informations sont disponibles.
-
-APPROCHE:
-- Présente le résultat
-- Propose des ajustements si nécessaire
-- Offre des options supplémentaires (variations, autres versions)
-- Sois fier du travail accompli`;
-
-      default:
-        return basePrompt;
-    }
+  getCollectedInfo(sessionData: CollectedData): string[] {
+    const info: string[] = [];
+    if (sessionData.projectType) info.push(`Type: ${sessionData.projectType}`);
+    if (sessionData.textContent) info.push('Contenu fourni');
+    if (sessionData.targetAudience) info.push(`Public: ${sessionData.targetAudience}`);
+    if (sessionData.voiceGender) info.push(`Voix: ${sessionData.voiceGender}`);
+    if (sessionData.emotionStyle) info.push(`Style: ${sessionData.emotionStyle}`);
+    return info;
   },
 
   // Méthode pour vider l'historique d'une session
-  clearHistory(threadId: string) {
-    conversationStore.delete(threadId);
-    console.log("🗑️ Historique supprimé pour:", threadId);
+  clearHistory(threadId: string): void {
+    sessionStore.delete(threadId);
+    console.log("🗑️ Session supprimée:", threadId);
   }
 };
 
-console.log("✅ Agent audio intelligent créé");
+console.log("✅ Agent audio structuré créé");
