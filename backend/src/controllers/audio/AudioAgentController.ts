@@ -7,44 +7,15 @@ import { AIMessage, HumanMessage } from "@langchain/core/messages";
 
 interface AgentResult {
   messages: AIMessage[];
-  conversationState: AudioAgentControllerState;
+  conversationState: {
+    phase: string;
+    step: number;
+  };
   historyLength: number;
   audioGenerated: boolean;
-  audioUrl: any;
-  context?: {
-    textContent?: string;
-    targetAudience?: string;
-    voicePreference?: string;
-    emotionStyle?: string;
-    projectType?: string;
-  };
-}
-
-interface AudioAgentControllerState {
-  phase: string;
-  messageCount: number;
-  hasContent: boolean;
-  hasAudience: boolean;
-  hasDuration: boolean;
-  hasStyle: boolean;
-  hasContext: boolean;
-  hasVoice: boolean;  // Ajouté car utilisé dans analyzeAgentResponse
-  collectedInfo: never[];
-}
-
-interface AudioAgentResponse {
-  messages: AIMessage[];
-  conversationState: AudioAgentControllerState;
-  historyLength: number;
-  audioGenerated: boolean;
-  audioUrl: any;
-  context: {
-    textContent?: string;
-    targetAudience?: string;
-    voicePreference?: string;
-    emotionStyle?: string;
-    projectType?: string;
-  };
+  audioUrl?: string;
+  collectedInfo?: string[];
+  sessionData?: any;
 }
 
 export class AudioAgentController {
@@ -70,10 +41,7 @@ export class AudioAgentController {
         },
       };
 
-      // Ne PAS modifier le message avec le contexte - laisser l'agent analyser naturellement
-      console.log("📝 Message original envoyé à l'agent:", message);
-
-      // Créer le message utilisateur sans modification
+      // Créer le message utilisateur
       const userMessage = new HumanMessage(message);
 
       console.log("🚀 Envoi à l'agent...");
@@ -90,11 +58,14 @@ export class AudioAgentController {
       console.log("📊 État conversation:", conversationState);
       console.log("🎵 Audio généré:", result.audioGenerated);
 
+      // Normaliser la phase pour le frontend
+      const normalizedPhase = this.normalizePhase(conversationState?.phase);
+
       // Analyser la réponse pour déterminer les actions possibles
-      const analysis = AudioAgentController.analyzeAgentResponse(
+      const analysis = this.analyzeAgentResponse(
         responseContent as string,
         conversationState,
-        result.context || {} // Utilisation d'un objet vide par défaut
+        result.sessionData || {}
       );
 
       // Construire la réponse enrichie
@@ -109,13 +80,13 @@ export class AudioAgentController {
         canProceed: analysis.canProceed,
         readyToGenerate: analysis.readyToGenerate,
         conversationLength: result.historyLength,
-        collectedInfo: conversationState?.collectedInfo || [],
-        phase: conversationState?.phase || 'discovery',
+        collectedInfo: result.collectedInfo || [],
+        phase: normalizedPhase,
 
-        // Nouvelles informations enrichies
+        // Informations audio
         audioGenerated: result.audioGenerated || false,
         audioUrl: result.audioUrl || null,
-        context: result.context || {},
+        context: result.sessionData || {},
 
         // Métadonnées de session
         metadata: {
@@ -179,12 +150,29 @@ export class AudioAgentController {
   }
 
   /**
-   * Analyse intelligente de la réponse de l'agent avec contexte enrichi
+   * Normalise les phases pour le frontend
+   */
+  private static normalizePhase(phase: string | undefined): string {
+    if (!phase) return 'discovery';
+
+    const phaseMapping: Record<string, string> = {
+      'error': 'clarification',
+      'complete': 'complete',
+      'discovery': 'discovery',
+      'clarification': 'clarification',
+      'generation': 'generation'
+    };
+
+    return phaseMapping[phase.toLowerCase()] || 'clarification';
+  }
+
+  /**
+   * Analyse intelligente de la réponse de l'agent
    */
   private static analyzeAgentResponse(
     content: string,
     state: any,
-    context: any = {}
+    sessionData: any = {}
   ): {
     needsMoreInfo: boolean;
     missingInfo: string[];
@@ -195,138 +183,68 @@ export class AudioAgentController {
   } {
     const lowerContent = content.toLowerCase();
 
-    // Déterminer les infos manquantes basé sur l'état et le contexte
+    // Déterminer les infos manquantes
     const missingInfo = [];
-    if (!state?.hasContent && !context?.textContent) {
-      missingInfo.push('Contenu à vocaliser');
-    }
-    if (!state?.hasAudience && !context?.targetAudience) {
-      missingInfo.push('Public cible');
-    }
-    if (!state?.hasVoice && !context?.voicePreference) {
-      missingInfo.push('Type de voix');
-    }
-    if (!state?.hasStyle && !context?.emotionStyle) {
-      missingInfo.push('Style/ton');
-    }
-    if (!state?.hasContext && !context?.projectType) {
-      missingInfo.push('Contexte d\'utilisation');
+    if (!sessionData?.textContent) {
+      missingInfo.push('Texte à vocaliser');
     }
 
     // Indicateurs que l'agent pose des questions
-    const askingQuestions = [
-      /quel.*\?/i,
-      /quelle.*\?/i,
-      /pouvez-vous/i,
-      /pourriez-vous/i,
-      /avez-vous/i,
-      /me dire/i,
-      /préciser/i,
-      /plus.*informations/i,
-      /\?.*$/m
-    ].some(pattern => pattern.test(content));
+    const askingQuestions = /\?/.test(content) && !lowerContent.includes('on lance');
 
-    // Indicateurs que l'agent est prêt à générer ou a généré
-    const readyToGenerate = [
-      /générer/i,
-      /créer.*audio/i,
-      /procéder/i,
-      /lancer/i,
-      /parfait/i,
-      /excellent/i,
-      /toutes.*informations/i,
-      /prêt/i,
-      /maintenant/i,
-      /génération.*en.*cours/i
-    ].some(pattern => pattern.test(content)) && state?.phase === 'generation';
+    // Indicateurs que l'agent est prêt à générer
+    const readyToGenerate =
+      (lowerContent.includes('on lance') ||
+        lowerContent.includes('générer') ||
+        lowerContent.includes('prêt') ||
+        lowerContent.includes('go')) &&
+      sessionData?.textContent;
 
     // Indicateurs qu'un audio a été généré
-    const audioGenerated = [
-      /audio.*généré/i,
-      /fichier.*créé/i,
-      /écouter.*ci-dessous/i,
-      /http.*\/audio\//i
-    ].some(pattern => pattern.test(content));
+    const audioGenerated =
+      lowerContent.includes('audio') &&
+      (lowerContent.includes('généré') ||
+        lowerContent.includes('prêt') ||
+        lowerContent.includes('voilà'));
 
     const needsMoreInfo = askingQuestions && !readyToGenerate && !audioGenerated;
-    const canProceed = state?.phase === 'generation' || state?.phase === 'complete' || audioGenerated;
+    const canProceed = readyToGenerate || audioGenerated;
 
-    // Générer des suggestions basées sur la phase et le contexte
+    // Générer des suggestions contextuelles
     let suggestions: string[] = [];
     let nextSteps: string[] = [];
 
-    switch (state?.phase) {
-      case 'discovery':
-        suggestions = [
-          "Décrivez votre projet audio en quelques mots",
-          "Mentionnez le type de contenu (pub, formation, etc.)",
-          "L'assistant va vous guider étape par étape"
-        ];
-        nextSteps = [
-          "Décrire le projet",
-          "Fournir le contexte général"
-        ];
-        break;
-
-      case 'clarification':
-        suggestions = [
-          "Répondez à la question posée par l'assistant",
-          "Soyez précis dans votre réponse",
-          "Une seule information à la fois"
-        ];
-        nextSteps = [
-          "Répondre à la question",
-          "Clarifier les détails demandés"
-        ];
-        break;
-
-      case 'generation':
-        if (audioGenerated) {
-          suggestions = [
-            "L'audio a été généré avec succès",
-            "Vous pouvez l'écouter ci-dessus",
-            "Demandez des ajustements si nécessaire"
-          ];
-          nextSteps = [
-            "Écouter l'audio",
-            "Télécharger le fichier",
-            "Demander des modifications"
-          ];
-        } else {
-          suggestions = [
-            "L'assistant peut maintenant générer votre audio",
-            "Confirmez pour procéder",
-            "Vous pourrez écouter et télécharger le résultat"
-          ];
-          nextSteps = [
-            "Confirmer la génération",
-            "Générer l'audio",
-            "Écouter le résultat"
-          ];
-        }
-        break;
-
-      case 'complete':
-        suggestions = [
-          "Toutes les informations sont collectées",
-          "L'audio est prêt ou généré",
-          "Nouvelles variations possibles"
-        ];
-        nextSteps = [
-          "Écouter l'audio final",
-          "Télécharger le fichier",
-          "Créer des variantes"
-        ];
-        break;
-
-      default:
-        suggestions = [
-          "Décrivez ce que vous souhaitez créer",
-          "L'assistant vous guidera pas à pas"
-        ];
-        nextSteps = [
-          "Commencer la conversation"
-        ];
+    if (audioGenerated) {
+      suggestions = [
+        "L'audio est prêt !",
+        "Tu peux l'écouter et le télécharger",
+        "Dis 'nouveau' pour créer un autre audio"
+      ];
+      nextSteps = [
+        "Écouter l'audio",
+        "Télécharger",
+        "Créer un nouveau"
+      ];
+    } else if (readyToGenerate) {
+      suggestions = [
+        "Tout est prêt pour générer",
+        "Réponds 'oui' ou 'go' pour lancer",
+        "Tu peux encore modifier si besoin"
+      ];
+      nextSteps = [
+        "Confirmer la génération",
+        "Modifier les paramètres"
+      ];
+    } else {
+      suggestions = [
+        "Continue la conversation naturellement",
+        "L'assistant te guide étape par étape",
+        "Pas besoin de tout dire d'un coup"
+      ];
+      nextSteps = [
+        "Répondre à la question",
+        "Fournir plus de détails"
+      ];
     }
 
     return {
