@@ -90,6 +90,21 @@ export class AudioAgentController {
         message
       );
 
+      // Vérifier si un audio a été généré
+      let audioUrl = null;
+      let audioData = null;
+
+      if (result.audioGenerated && result.audioUrl) {
+        audioUrl = result.audioUrl;
+        audioData = {
+          url: audioUrl,
+          filename: audioUrl.split('/').pop() || 'audio.wav',
+          mimeType: 'audio/wav',
+          duration: 10
+        };
+        console.log("🎵 Audio généré avec URL:", audioUrl);
+      }
+
       // Construire la réponse enrichie
       const responseData = {
         success: true,
@@ -105,14 +120,11 @@ export class AudioAgentController {
         collectedInfo: result.collectedInfo || [],
         phase: normalizedPhase,
 
-        // Informations audio avec structure correcte pour le frontend
+        // Informations audio
         audioGenerated: result.audioGenerated || false,
-        audioData: result.audioGenerated && result.audioUrl ? {
-          url: result.audioUrl,
-          filename: result.audioUrl.split('/').pop() || 'audio.wav',
-          mimeType: 'audio/wav',
-          duration: result.sessionData?.duration || 10
-        } : null,
+        audioUrl: audioUrl,
+        audioData: audioData,
+
         context: result.sessionData || {},
 
         // Métadonnées de session
@@ -120,7 +132,7 @@ export class AudioAgentController {
           timestamp: new Date().toISOString(),
           processingTime: Date.now(),
           messageCount: result.historyLength,
-          hasAudioContent: !!result.audioUrl
+          hasAudioContent: !!audioUrl
         }
       };
 
@@ -202,60 +214,80 @@ export class AudioAgentController {
     sessionData: any = {},
     userMessage: string
   ): Promise<AnalysisResult> {
-    const prompt = `Tu es un assistant qui analyse les conversations d'un agent audio. 
-Analyse cette conversation et retourne un JSON avec les informations demandées.
-
-Réponse de l'agent : "${agentResponse}"
-Dernier message utilisateur : "${userMessage}"
-Phase actuelle : ${state?.phase || 'unknown'}
-Données collectées : ${JSON.stringify(sessionData)}
-
-Analyse et retourne UNIQUEMENT un JSON avec cette structure exacte :
-{
-  "needsMoreInfo": boolean (true si l'agent pose une question),
-  "missingInfo": ["liste des informations manquantes"],
-  "suggestions": ["3 suggestions pertinentes basées sur la question posée par l'agent"],
-  "nextSteps": ["2-3 prochaines étapes logiques"],
-  "canProceed": boolean (true si on peut continuer),
-  "readyToGenerate": boolean (true si prêt à générer l'audio),
-  "currentQuestion": "la question posée par l'agent (si applicable)",
-  "expectedResponseType": "type de réponse attendue (texte, choix, confirmation, etc.)"
-}
-
-Les suggestions doivent être des réponses possibles à la question de l'agent, pas des actions génériques.
-Par exemple :
-- Si l'agent demande le public cible -> suggestions: ["Grand public", "Professionnels", "Enfants"]
-- Si l'agent demande le style -> suggestions: ["Dynamique et enjoué", "Calme et posé", "Professionnel"]
-- Si l'agent demande le texte -> suggestions: ["Coller mon texte", "Créer un nouveau texte", "Utiliser un modèle"]`;
-
     try {
-      console.log("🤖 Analyse LLM en cours...");
-      const response = await this.analysisLLM.invoke(prompt);
-      const content = response.content as string;
-      
-      // Extraire le JSON de la réponse
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const analysis = JSON.parse(jsonMatch[0]) as AnalysisResult;
-        
-        // Validation et enrichissement des suggestions basées sur le contexte
-        if (analysis.currentQuestion) {
-          analysis.suggestions = await this.generateContextualSuggestions(
-            analysis.currentQuestion,
-            agentResponse,
-            sessionData
-          );
-        }
-        
-        console.log("✅ Analyse LLM complétée:", analysis);
-        return analysis;
-      }
-    } catch (error) {
-      console.error("❌ Erreur analyse LLM:", error);
-    }
+      // Analyse directe sans LLM pour plus de rapidité et fiabilité
+      const lowerResponse = agentResponse.toLowerCase();
+      const analysis: AnalysisResult = {
+        needsMoreInfo: false,
+        missingInfo: [],
+        suggestions: [],
+        nextSteps: [],
+        canProceed: false,
+        readyToGenerate: false,
+        currentQuestion: "",
+        expectedResponseType: "text"
+      };
 
-    // Fallback si l'analyse LLM échoue
-    return this.fallbackAnalysis(agentResponse, state, sessionData);
+      // Détection du type de question posée par l'agent
+      if (lowerResponse.includes('quel texte')) {
+        analysis.needsMoreInfo = true;
+        analysis.currentQuestion = "Quel texte veux-tu transformer ?";
+        analysis.expectedResponseType = "text";
+        analysis.suggestions = [
+          "\"Découvrez nos offres exceptionnelles ce week-end !\"",
+          "\"Bienvenue dans notre nouveau magasin\"",
+          "\"Formation professionnelle en ligne disponible\""
+        ];
+      } else if (lowerResponse.includes('style') && lowerResponse.includes('🎯')) {
+        analysis.needsMoreInfo = true;
+        analysis.currentQuestion = "Quel style préfères-tu ?";
+        analysis.expectedResponseType = "choice";
+        analysis.suggestions = ["Dynamique 🎯", "Calme 😌", "Pro 💼"];
+      } else if (lowerResponse.includes('pour qui') && lowerResponse.includes('👦')) {
+        analysis.needsMoreInfo = true;
+        analysis.currentQuestion = "Pour quel public ?";
+        analysis.expectedResponseType = "choice";
+        analysis.suggestions = ["Jeunes 👦", "Familles 👨‍👩‍👧", "Pros 👔"];
+      } else if (lowerResponse.includes('on génère') || lowerResponse.includes('lance')) {
+        analysis.needsMoreInfo = true;
+        analysis.currentQuestion = "Prêt à générer ?";
+        analysis.expectedResponseType = "confirmation";
+        analysis.suggestions = ["Oui, go ! 🚀", "C'est parti ! ✨", "Lance ! 🎵"];
+        analysis.readyToGenerate = true;
+      } else if (lowerResponse.includes('audio est prêt') || lowerResponse.includes('tadaaa')) {
+        analysis.needsMoreInfo = false;
+        analysis.canProceed = true;
+        analysis.suggestions = ["Nouveau projet ! 🆕", "Super ! 🙏", "J'adore ! ❤️"];
+      }
+
+      // Déterminer les infos manquantes
+      if (!sessionData.textContent) {
+        analysis.missingInfo.push("Le texte à vocaliser");
+      }
+      if (!sessionData.emotionStyle) {
+        analysis.missingInfo.push("Le style");
+      }
+      if (!sessionData.targetAudience) {
+        analysis.missingInfo.push("Le public cible");
+      }
+
+      // Prochaines étapes
+      if (analysis.readyToGenerate) {
+        analysis.nextSteps = ["Confirmer la génération", "L'audio sera créé"];
+      } else if (analysis.missingInfo.length > 0) {
+        analysis.nextSteps = ["Répondre à la question", "Continuer la conversation"];
+      } else {
+        analysis.nextSteps = ["Écouter l'audio", "Créer un nouveau projet"];
+      }
+
+      analysis.canProceed = analysis.missingInfo.length === 0 || analysis.readyToGenerate;
+
+      console.log("✅ Analyse complétée:", analysis);
+      return analysis;
+    } catch (error) {
+      console.error("❌ Erreur analyse:", error);
+      return this.fallbackAnalysis(agentResponse, state, sessionData);
+    }
   }
 
   /**
@@ -269,37 +301,37 @@ Par exemple :
     const lowerQuestion = currentQuestion.toLowerCase();
     const lowerResponse = agentResponse.toLowerCase();
 
-    // Détection intelligente du type de question et suggestions appropriées
-    if (lowerQuestion.includes('public') || lowerQuestion.includes('audience')) {
-      return ["Jeunes adultes (18-35 ans)", "Familles avec enfants", "Professionnels B2B"];
-    }
-    
-    if (lowerQuestion.includes('voix') || lowerQuestion.includes('préfér')) {
-      return ["Voix féminine chaleureuse", "Voix masculine professionnelle", "Peu importe"];
-    }
-    
-    if (lowerQuestion.includes('style') || lowerQuestion.includes('ton') || lowerQuestion.includes('ambiance')) {
-      return ["Dynamique et motivant", "Calme et rassurant", "Professionnel et sérieux"];
-    }
-    
-    if (lowerQuestion.includes('texte') || lowerResponse.includes('quel est le texte')) {
-      return ["J'ai déjà mon texte", "Aidez-moi à en créer un", "J'ai besoin de conseils"];
-    }
-    
-    if (lowerResponse.includes('on lance') || lowerResponse.includes('générer')) {
-      return ["Oui, c'est parfait !", "Attendez, je veux modifier", "Go ! Lance la génération"];
-    }
-    
-    if (lowerQuestion.includes('type') || lowerQuestion.includes('projet')) {
-      return ["Publicité radio", "Podcast ou narration", "Formation e-learning"];
+    // Détection basée sur les mots-clés de l'agent
+    if (lowerResponse.includes('quel texte') || lowerResponse.includes('texte')) {
+      return [
+        "Voici mon texte : \"Bienvenue chez nous\"",
+        "\"Découvrez nos offres exceptionnelles\"",
+        "Je veux créer un texte avec vous"
+      ];
     }
 
-    // Suggestions par défaut si aucune correspondance
-    return [
-      "Continuez avec vos questions",
-      "J'ai besoin de plus d'infos",
-      "Passons à l'étape suivante"
-    ];
+    if (lowerResponse.includes('style') && (lowerResponse.includes('dynamique') || lowerResponse.includes('calme') || lowerResponse.includes('pro'))) {
+      return ["Dynamique 🎯", "Calme 😌", "Pro 💼"];
+    }
+
+    if (lowerResponse.includes('pour qui') || lowerResponse.includes('jeunes') || lowerResponse.includes('familles')) {
+      return ["Jeunes 👦", "Familles 👨‍👩‍👧", "Pros 👔"];
+    }
+
+    if (lowerResponse.includes('génère') || lowerResponse.includes('lance') || lowerResponse.includes('on génère')) {
+      return ["Oui, go ! 🚀", "Lance la génération !", "C'est parti !"];
+    }
+
+    // Suggestions par défaut basées sur l'état
+    if (!sessionData.textContent) {
+      return [
+        "Publicité : \"Découvrez nos offres\"",
+        "Narration : \"Il était une fois\"",
+        "Info : \"Bienvenue sur notre service\""
+      ];
+    }
+
+    return ["Oui", "Continue", "C'est bon"];
   }
 
   /**

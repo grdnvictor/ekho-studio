@@ -117,16 +117,74 @@ export default function AudioPage() {
 
     const API_BASE_URL = 'http://localhost:3333';
 
+    // Suggestions de messages rapides dynamiques
+    const getQuickReplies = (phase: keyof typeof PHASE_CONFIG, lastAgentMessage?: string) => {
+        // Si on a un message de l'agent, analyser pour des suggestions contextuelles
+        if (lastAgentMessage) {
+            const lowerMessage = lastAgentMessage.toLowerCase();
+
+            // Détection du texte demandé
+            if (lowerMessage.includes('quel texte') || lowerMessage.includes('texte')) {
+                return [
+                    "\"Découvrez nos offres exceptionnelles ce week-end !\"",
+                    "\"Bienvenue dans notre nouveau magasin\"",
+                    "\"Formation professionnelle en ligne disponible\""
+                ];
+            }
+
+            // Détection du style avec emojis
+            if (lowerMessage.includes('style') && lowerMessage.includes('🎯')) {
+                return ["Dynamique 🎯", "Calme 😌", "Pro 💼"];
+            }
+
+            // Détection du public avec emojis
+            if (lowerMessage.includes('pour qui') && lowerMessage.includes('👦')) {
+                return ["Jeunes 👦", "Familles 👨‍👩‍👧", "Pros 👔"];
+            }
+
+            // Détection de confirmation
+            if (lowerMessage.includes('on génère') || lowerMessage.includes('lance')) {
+                return ["Oui, go ! 🚀", "C'est parti ! ✨", "Lance ! 🎵"];
+            }
+        }
+
+        // Fallback vers les suggestions par phase
+        const QUICK_REPLIES = {
+            discovery: [
+                "Je veux créer une pub radio 📻",
+                "\"Mon texte à transformer en audio\"",
+                "J'ai un texte de formation 💻"
+            ],
+            clarification: [
+                "Dynamique 🎯",
+                "Calme 😌",
+                "Pro 💼"
+            ],
+            generation: [
+                "Oui, lance ! 🚀",
+                "Go ! ✨",
+                "C'est parti ! 🎵"
+            ],
+            complete: [
+                "Nouveau projet ! 🆕",
+                "Super, merci ! 🙏",
+                "J'adore ! ❤️"
+            ]
+        };
+
+        return QUICK_REPLIES[phase] || [];
+    };
+
     // Initialisation côté client uniquement
     useEffect(() => {
         setIsClient(true);
-        setMessages([{
-            id: '1',
-            content: "🎙️ Salut ! Je suis ton assistant audio d'Ekho Studio.\n\nDécris-moi ton projet complet en une fois : type de contenu, style de voix, public cible, et surtout le TEXTE à vocaliser. Plus tu donnes de détails d'un coup, plus vite on aura ton audio ! 🚀",
-            sender: 'agent',
-            timestamp: new Date(),
-            phase: 'discovery'
-        }]);
+        // Pas de message initial, l'agent enverra son message de bienvenue automatiquement
+        setMessages([]);
+
+        // Envoyer un message vide pour déclencher le message de bienvenue de l'agent
+        setTimeout(() => {
+            sendInitialMessage();
+        }, 100);
     }, []);
 
     // Scroll automatique vers le bas
@@ -159,6 +217,58 @@ export default function AudioPage() {
         setTimeout(() => sendMessage(text), 100);
     };
 
+    const sendInitialMessage = async () => {
+        try {
+            const response = await fetch(`${API_BASE_URL}/audio-agent/chat`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    message: "",
+                    sessionId: sessionId,
+                })
+            });
+
+            const result = await response.json();
+            console.log("📦 Réponse initiale API:", result); // Debug
+
+            if (response.ok && result.success) {
+                // Extraire le contenu du message
+                let messageContent = '';
+
+                if (result.response) {
+                    messageContent = result.response;
+                } else if (result.messages && result.messages.length > 0) {
+                    messageContent = result.messages[0].content || result.messages[0];
+                } else if (result.message) {
+                    messageContent = result.message;
+                }
+
+                if (messageContent) {
+                    const welcomeMessage: Message = {
+                        id: Date.now().toString(),
+                        content: messageContent,
+                        sender: 'agent',
+                        timestamp: new Date(),
+                        phase: 'discovery'
+                    };
+                    setMessages([welcomeMessage]);
+                }
+            }
+        } catch (error) {
+            console.error('Erreur message initial:', error);
+            // Message de fallback
+            const fallbackMessage: Message = {
+                id: Date.now().toString(),
+                content: "🎙️ Salut ! Je suis ton assistant Ekho Studio. Dis-moi directement ton texte à transformer en audio, ou décris ton projet !",
+                sender: 'agent',
+                timestamp: new Date(),
+                phase: 'discovery'
+            };
+            setMessages([fallbackMessage]);
+        }
+    };
     const clearConversation = async () => {
         try {
             await fetch(`${API_BASE_URL}/audio-agent/clear-history`, {
@@ -224,13 +334,44 @@ export default function AudioPage() {
             }
 
             const result = await response.json();
+            console.log("📦 Réponse API:", result); // Debug
 
             if (result.success) {
+                // Extraire le contenu du message
+                let messageContent = '';
+
+                // Vérifier différents formats possibles
+                if (result.response) {
+                    messageContent = result.response;
+                } else if (result.messages && result.messages.length > 0) {
+                    // Si les messages sont dans un tableau
+                    messageContent = result.messages[0].content || result.messages[0];
+                } else if (result.message) {
+                    messageContent = result.message;
+                }
+
+                if (!messageContent) {
+                    console.error("❌ Pas de contenu dans la réponse:", result);
+                    throw new Error("Réponse vide de l'API");
+                }
+
                 // Extraire l'URL audio si présente
                 let audioUrl: string | null = null;
-                if (result.audioGenerated && result.audioUrl) {
-                    audioUrl = result.audioUrl;
+
+                if (result.audioGenerated) {
+                    if (result.audioUrl) {
+                        audioUrl = result.audioUrl;
+                    } else if (result.audioData?.url) {
+                        audioUrl = result.audioData.url;
+                    } else if (messageContent) {
+                        const urlMatch = messageContent.match(/https?:\/\/[^\s]+\.wav/);
+                        if (urlMatch) {
+                            audioUrl = urlMatch[0];
+                        }
+                    }
+
                     if (audioUrl) {
+                        console.log("🎵 Audio URL détectée:", audioUrl);
                         setGeneratedAudios(prev => [...prev, audioUrl as string]);
                     }
                 }
@@ -238,7 +379,7 @@ export default function AudioPage() {
                 // Ajouter la réponse de l'agent
                 const agentMessage: Message = {
                     id: (Date.now() + 1).toString(),
-                    content: result.response,
+                    content: messageContent,
                     sender: 'agent',
                     timestamp: new Date(),
                     needsMoreInfo: result.needsMoreInfo,
@@ -276,12 +417,13 @@ export default function AudioPage() {
             }
 
         } catch (error: any) {
-            console.error('Erreur:', error);
+            console.error('Erreur complète:', error);
+            console.error('Message d\'erreur:', error.message);
 
-            // Ajouter un message d'erreur fun
+            // Message d'erreur plus informatif
             const errorMessage: Message = {
                 id: (Date.now() + 2).toString(),
-                content: `😅 Oups ! J'ai eu un petit bug. Tu peux reformuler ?\n\nErreur: ${error.message}`,
+                content: `😅 Oups ! J'ai eu un petit problème technique.\n\nDétails: ${error.message}\n\nEssaie de reformuler ta demande ou clique sur "Nouveau projet" pour recommencer.`,
                 sender: 'agent',
                 timestamp: new Date(),
             };
@@ -292,7 +434,6 @@ export default function AudioPage() {
             setIsLoading(false);
         }
     };
-
     const formatTime = (date: Date) => {
         if (!isClient) return '';
         return date.toLocaleTimeString('fr-FR', {
@@ -656,7 +797,12 @@ export default function AudioPage() {
                     {showQuickReplies && !isLoading && isClient && (
                         <div className="px-4 py-2 border-t bg-gradient-to-r from-purple-50 to-pink-50">
                             <div className="flex flex-wrap gap-2">
-                                {QUICK_REPLIES[currentPhase]?.map((reply, index) => (
+                                {getQuickReplies(
+                                    currentPhase,
+                                    messages[messages.length - 1]?.sender === 'agent'
+                                        ? messages[messages.length - 1]?.content
+                                        : undefined
+                                ).map((reply, index) => (
                                     <Button
                                         key={`quick-${currentPhase}-${index}`}
                                         variant="outline"
