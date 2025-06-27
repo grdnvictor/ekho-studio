@@ -13,7 +13,7 @@ const LM_STUDIO_URL = process.env.LM_STUDIO_URL || 'http://localhost:1234/v1';
 console.log("🌍 URL LM Studio:", LM_STUDIO_URL);
 
 const agentModel = new ChatOpenAI({
-  temperature: 0.7, // Plus créatif pour des réponses naturelles
+  temperature: 0.7,
   model: "local-model",
   apiKey: "lm-studio",
   configuration: {
@@ -53,7 +53,7 @@ interface AgentResponse {
 
 // Stockage en mémoire des sessions avec contexte conversationnel
 const sessionStore = new Map<string, CollectedData>();
-const conversationHistory = new Map<string, string[]>();
+const conversationHistory = new Map<string, { role: string; content: string }[]>();
 
 // Prompts optimisés pour une conversation naturelle
 const CONVERSATION_PROMPTS = {
@@ -103,84 +103,135 @@ const CONVERSATION_PROMPTS = {
   ]
 };
 
-// Analyser intelligemment le message utilisateur
-function analyzeUserMessage(message: string, sessionData: CollectedData): {
+// Fonction pour détecter si un message contient du texte à vocaliser
+function detectTextContent(message: string): string | null {
+  // Nettoyer le message
+  const cleanedMessage = message.trim();
+  
+  // Patterns pour détecter le texte
+  const textPatterns = [
+    /^["«](.+)["»]$/,  // Entre guillemets
+    /^[''](.+)['']$/,  // Entre apostrophes
+    /le texte est\s*:?\s*(.+)/i,
+    /voici le texte\s*:?\s*(.+)/i,
+    /^(.+)$/  // Tout le message si aucun pattern
+  ];
+
+  for (const pattern of textPatterns) {
+    const match = cleanedMessage.match(pattern);
+    if (match && match[1]) {
+      const extractedText = match[1].trim().replace(/^["«'']|["»'']$/g, '');
+      // Vérifier que c'est bien du texte à vocaliser (plus de 3 mots ou entre guillemets)
+      if (extractedText.split(/\s+/).length > 3 || /["«'']/.test(cleanedMessage)) {
+        return extractedText;
+      }
+    }
+  }
+
+  // Si le message fait plus de 20 caractères et ne ressemble pas à une question
+  if (cleanedMessage.length > 20 && !cleanedMessage.includes('?') && !cleanedMessage.toLowerCase().includes('je veux')) {
+    return cleanedMessage;
+  }
+
+  return null;
+}
+
+// Analyser intelligemment le message utilisateur avec LLM
+async function analyzeUserMessageWithLLM(
+  message: string, 
+  sessionData: CollectedData,
+  conversationContext: { role: string; content: string }[]
+): Promise<{
   detectedInfo: Partial<CollectedData>;
   confidence: number;
-} {
-  const lowerMessage = message.toLowerCase();
-  const detectedInfo: Partial<CollectedData> = {};
-  let confidence = 0;
+  intentRecognized: string;
+}> {
+  const prompt = `Tu es un assistant qui analyse les messages dans une conversation de création audio.
+Analyse ce message et l'historique pour extraire les informations pertinentes.
 
-  // Détection du type de projet
-  const projectKeywords = {
-    'publicité': ['pub', 'publicit', 'spot', 'annonce', 'promo'],
-    'podcast': ['podcast', 'émission', 'épisode'],
-    'formation': ['formation', 'cours', 'tutoriel', 'e-learning', 'apprendre'],
-    'narration': ['histoire', 'conte', 'récit', 'narrat'],
-    'présentation': ['présentation', 'pitch', 'démo'],
-    'livre audio': ['livre', 'audiobook', 'lecture'],
-    'méditation': ['méditation', 'relaxation', 'zen', 'calme']
+Historique de conversation:
+${conversationContext.slice(-3).map(msg => `${msg.role}: ${msg.content}`).join('\n')}
+
+Nouveau message: "${message}"
+
+Données déjà collectées: ${JSON.stringify(sessionData)}
+
+IMPORTANT: Si le message contient du texte entre guillemets ou semble être le texte à vocaliser (plus de 20 caractères sans être une question), extrais-le comme textContent.
+
+Retourne UNIQUEMENT un JSON avec:
+{
+  "detectedInfo": {
+    "projectType": "type si mentionné (publicité/podcast/formation/etc)",
+    "textContent": "texte à vocaliser si fourni",
+    "targetAudience": "public cible si mentionné",
+    "voiceGender": "masculine/feminine si préférence exprimée",
+    "emotionStyle": "style émotionnel si mentionné"
+  },
+  "confidence": 0.0 à 1.0,
+  "intentRecognized": "provide_text/provide_info/confirm/modify/other"
+}`;
+
+  try {
+    const response = await agentModel.invoke(prompt);
+    const content = response.content as string;
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+  } catch (error) {
+    console.error("Erreur analyse LLM:", error);
+  }
+
+  // Fallback avec détection basique
+  const detectedText = detectTextContent(message);
+  return {
+    detectedInfo: detectedText ? { textContent: detectedText } : {},
+    confidence: detectedText ? 0.8 : 0.2,
+    intentRecognized: detectedText ? 'provide_text' : 'other'
   };
+}
 
-  for (const [type, keywords] of Object.entries(projectKeywords)) {
-    if (keywords.some(keyword => lowerMessage.includes(keyword))) {
-      detectedInfo.projectType = type;
-      confidence += 0.2;
-      break;
+// Générer la prochaine réponse avec le LLM
+async function generateNextResponse(
+  sessionData: CollectedData,
+  conversationContext: { role: string; content: string }[],
+  lastUserIntent: string
+): Promise<string> {
+  const missingInfo = getMissingInfo(sessionData);
+  
+  const prompt = `Tu es l'assistant audio d'Ekho Studio, chaleureux et professionnel.
+
+Contexte de conversation:
+${conversationContext.slice(-4).map(msg => `${msg.role}: ${msg.content}`).join('\n')}
+
+Données collectées: ${JSON.stringify(sessionData)}
+Informations manquantes: ${missingInfo.join(', ')}
+Dernière intention utilisateur: ${lastUserIntent}
+
+RÈGLES IMPORTANTES:
+1. Ne JAMAIS redemander une information déjà fournie
+2. Si le texte est fourni, passer à l'information suivante
+3. Une seule question à la fois
+4. Être naturel et encourageant
+5. Si toutes les infos essentielles sont là, proposer de générer
+
+Génère la prochaine réponse appropriée.`;
+
+  try {
+    const response = await agentModel.invoke(prompt);
+    return response.content as string;
+  } catch (error) {
+    console.error("Erreur génération réponse:", error);
+    // Fallback
+    if (!sessionData.textContent) {
+      return getRandomResponse(CONVERSATION_PROMPTS.clarification.text);
+    } else if (missingInfo.length > 0) {
+      return `${getRandomResponse(CONVERSATION_PROMPTS.encouragement)} Pour améliorer le résultat, ${missingInfo[0].toLowerCase()} ?`;
+    } else {
+      return getRandomResponse(CONVERSATION_PROMPTS.readyToGenerate);
     }
   }
-
-  // Détection du public cible
-  const audienceKeywords = {
-    'enfants': ['enfant', 'jeune', 'kid', 'école', 'maternelle'],
-    'adolescents': ['ado', 'lycée', 'jeune', 'teen'],
-    'adultes': ['adulte', 'professionnel', 'entreprise', 'société'],
-    'seniors': ['senior', 'âgé', 'retraité'],
-    'grand public': ['tout le monde', 'général', 'large', 'tous']
-  };
-
-  for (const [audience, keywords] of Object.entries(audienceKeywords)) {
-    if (keywords.some(keyword => lowerMessage.includes(keyword))) {
-      detectedInfo.targetAudience = audience;
-      confidence += 0.2;
-      break;
-    }
-  }
-
-  // Détection du genre de voix
-  if (lowerMessage.includes('masculin') || lowerMessage.includes('homme')) {
-    detectedInfo.voiceGender = 'masculine';
-    confidence += 0.15;
-  } else if (lowerMessage.includes('féminin') || lowerMessage.includes('femme')) {
-    detectedInfo.voiceGender = 'feminine';
-    confidence += 0.15;
-  }
-
-  // Détection du style/émotion
-  const styleKeywords = {
-    'professionnel': ['professionnel', 'sérieux', 'formel', 'corporate'],
-    'chaleureux': ['chaleureux', 'amical', 'sympathique', 'accueillant'],
-    'dynamique': ['dynamique', 'énergique', 'enjoué', 'motivant', 'enthousiaste'],
-    'calme': ['calme', 'posé', 'tranquille', 'apaisant', 'doux'],
-    'dramatique': ['dramatique', 'intense', 'captivant', 'suspense']
-  };
-
-  for (const [style, keywords] of Object.entries(styleKeywords)) {
-    if (keywords.some(keyword => lowerMessage.includes(keyword))) {
-      detectedInfo.emotionStyle = style;
-      confidence += 0.15;
-      break;
-    }
-  }
-
-  // Détection de texte long (probable contenu à vocaliser)
-  if (message.length > 100 && !message.includes('?')) {
-    detectedInfo.textContent = message;
-    confidence += 0.3;
-  }
-
-  return { detectedInfo, confidence };
 }
 
 // Déterminer ce qui manque pour générer
@@ -192,11 +243,11 @@ function getMissingInfo(sessionData: CollectedData): string[] {
   }
 
   // Les autres infos sont optionnelles mais améliorent le résultat
-  if (!sessionData.projectType) {
-    missing.push('Le type de projet (optionnel)');
-  }
   if (!sessionData.targetAudience) {
-    missing.push('Le public cible (optionnel)');
+    missing.push('Pour qui est destiné cet audio');
+  }
+  if (!sessionData.voiceGender && !sessionData.emotionStyle) {
+    missing.push('Quel style de voix tu préfères');
   }
 
   return missing;
@@ -218,7 +269,7 @@ export const audioAgent = {
 
     // Récupérer ou initialiser les données de session
     let sessionData: CollectedData = sessionStore.get(threadId) || {};
-    let history: string[] = conversationHistory.get(threadId) || [];
+    let history = conversationHistory.get(threadId) || [];
 
     // Extraire le message utilisateur
     const userMessage = input.messages?.[input.messages.length - 1];
@@ -227,6 +278,7 @@ export const audioAgent = {
     console.log("📊 État session:", {
       hasText: !!sessionData.textContent,
       hasProjectType: !!sessionData.projectType,
+      historyLength: history.length,
       userMessage: userText.slice(0, 50)
     });
 
@@ -234,8 +286,7 @@ export const audioAgent = {
       // Si c'est le premier message
       if (history.length === 0) {
         const welcomeMessage = new AIMessage(getRandomResponse(CONVERSATION_PROMPTS.welcome));
-        history.push(`User: ${userText}`);
-        history.push(`Assistant: ${welcomeMessage.content}`);
+        history.push({ role: 'assistant', content: welcomeMessage.content as string });
         conversationHistory.set(threadId, history);
 
         return {
@@ -246,71 +297,45 @@ export const audioAgent = {
         };
       }
 
-      // Analyser le message utilisateur
-      const { detectedInfo, confidence } = analyzeUserMessage(userText, sessionData);
+      // Ajouter le message utilisateur à l'historique
+      history.push({ role: 'user', content: userText });
+
+      // Analyser le message utilisateur avec LLM
+      const analysis = await analyzeUserMessageWithLLM(userText, sessionData, history);
+      const { detectedInfo, confidence, intentRecognized } = analysis;
+
+      console.log("🔍 Analyse du message:", {
+        detectedInfo,
+        confidence,
+        intentRecognized
+      });
 
       // Mettre à jour les données de session avec les infos détectées
       sessionData = { ...sessionData, ...detectedInfo };
       sessionStore.set(threadId, sessionData);
 
-      // Ajouter au contexte conversationnel
-      history.push(`User: ${userText}`);
-
-      // Si on a le texte principal, on peut générer
-      if (sessionData.textContent && (userText.toLowerCase().includes('oui') ||
-        userText.toLowerCase().includes('go') ||
-        userText.toLowerCase().includes('lance') ||
-        userText.toLowerCase().includes('génère'))) {
+      // Si on a le texte principal et l'utilisateur confirme, on peut générer
+      if (sessionData.textContent && 
+          (intentRecognized === 'confirm' || 
+           userText.toLowerCase().match(/oui|go|lance|génère|ok|parfait/))) {
         console.log("🎵 Génération demandée");
         return await this.generateAudio(sessionData, threadId);
       }
 
-      // Déterminer la prochaine question pertinente
-      let response: string;
-      let phase: string = 'clarification';
-
+      // Générer la prochaine réponse avec le LLM
+      const response = await generateNextResponse(sessionData, history, intentRecognized);
+      
+      // Déterminer la phase
+      let phase = 'clarification';
       if (!sessionData.textContent) {
-        // Si on a détecté du texte dans ce message
-        if (detectedInfo.textContent) {
-          response = `${getRandomResponse(CONVERSATION_PROMPTS.encouragement)} "${detectedInfo.textContent.slice(0, 50)}${detectedInfo.textContent.length > 50 ? '...' : ''}"`;
-
-          // Demander des infos supplémentaires optionnelles
-          if (!sessionData.targetAudience) {
-            response += `\n\n${getRandomResponse(CONVERSATION_PROMPTS.clarification.audience)}`;
-          } else if (!sessionData.voiceGender) {
-            response += `\n\n${getRandomResponse(CONVERSATION_PROMPTS.clarification.voice)}`;
-          } else if (!sessionData.emotionStyle) {
-            response += `\n\n${getRandomResponse(CONVERSATION_PROMPTS.clarification.style)}`;
-          } else {
-            // On a tout, proposer de générer
-            response += `\n\n${getRandomResponse(CONVERSATION_PROMPTS.readyToGenerate)}`;
-            phase = 'generation';
-          }
-        } else {
-          // Demander le texte
-          response = getRandomResponse(CONVERSATION_PROMPTS.clarification.text);
-        }
-      } else {
-        // On a le texte, enrichir avec d'autres infos
-        response = getRandomResponse(CONVERSATION_PROMPTS.encouragement);
-
-        if (!sessionData.targetAudience && confidence < 0.5) {
-          response += ` ${getRandomResponse(CONVERSATION_PROMPTS.clarification.audience)}`;
-        } else if (!sessionData.voiceGender && confidence < 0.7) {
-          response += ` ${getRandomResponse(CONVERSATION_PROMPTS.clarification.voice)}`;
-        } else if (!sessionData.emotionStyle && confidence < 0.8) {
-          response += ` ${getRandomResponse(CONVERSATION_PROMPTS.clarification.style)}`;
-        } else {
-          // Proposer de générer
-          response = getRandomResponse(CONVERSATION_PROMPTS.readyToGenerate);
-          phase = 'generation';
-          sessionData.isReadyToGenerate = true;
-        }
+        phase = 'discovery';
+      } else if (getMissingInfo(sessionData).length === 0) {
+        phase = 'generation';
       }
 
       // Créer le message de réponse
       const responseMessage = new AIMessage(response);
-      history.push(`Assistant: ${response}`);
+      history.push({ role: 'assistant', content: response });
       conversationHistory.set(threadId, history);
 
       // Collecter les infos pour l'affichage
@@ -326,7 +351,8 @@ export const audioAgent = {
         conversationState: { phase, step: history.length },
         historyLength: history.length,
         audioGenerated: false,
-        collectedInfo
+        collectedInfo,
+        sessionData
       };
 
     } catch (error: unknown) {
