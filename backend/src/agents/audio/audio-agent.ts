@@ -215,8 +215,10 @@ RÈGLES IMPORTANTES:
 3. Une seule question à la fois
 4. Être naturel et encourageant
 5. Si toutes les infos essentielles sont là, proposer de générer
+6. Ne JAMAIS utiliser de markdown (pas de **, __, *, etc.)
+7. Si le texte fourni est court, proposer de l'améliorer
 
-Génère la prochaine réponse appropriée.`;
+Génère la prochaine réponse appropriée, en langage naturel sans formatage.`;
 
   try {
     const response = await agentModel.invoke(prompt);
@@ -318,7 +320,15 @@ export const audioAgent = {
       if (sessionData.textContent && 
           (intentRecognized === 'confirm' || 
            userText.toLowerCase().match(/oui|go|lance|génère|ok|parfait/))) {
-        console.log("🎵 Génération demandée");
+        console.log("🎵 Génération audio demandée");
+        
+        // D'abord envoyer un message de statut
+        const statusMessage = new AIMessage(
+          "🎵 Super ! Je lance la génération de ton audio... Ça va prendre quelques secondes ⏳"
+        );
+        history.push({ role: 'assistant', content: statusMessage.content as string });
+        conversationHistory.set(threadId, history);
+        
         return await this.generateAudio(sessionData, threadId);
       }
 
@@ -410,14 +420,14 @@ export const audioAgent = {
 
         const summaryMessage = new AIMessage(
           `${getRandomResponse(funMessages)}\n\n` +
-          `📋 **Petit récap de ton projet :**\n` +
-          (sessionData.projectType ? `• **Type :** ${sessionData.projectType}\n` : '') +
-          (sessionData.targetAudience ? `• **Public :** ${sessionData.targetAudience}\n` : '') +
-          `• **Voix :** ${this.getVoiceDisplayName(voiceName)}\n` +
-          (sessionData.emotionStyle ? `• **Style :** ${this.getStyleDisplayName(sessionData.emotionStyle)}\n` : '') +
-          `• **Durée :** ~${('duration' in audioResult ? audioResult.duration : 0)}s\n\n` +
+          `📋 Petit récap de ton projet :\n` +
+          (sessionData.projectType ? `• Type : ${sessionData.projectType}\n` : '') +
+          (sessionData.targetAudience ? `• Public : ${sessionData.targetAudience}\n` : '') +
+          `• Voix : ${this.getVoiceDisplayName(voiceName)}\n` +
+          (sessionData.emotionStyle ? `• Style : ${this.getStyleDisplayName(sessionData.emotionStyle)}\n` : '') +
+          `• Durée : ~${('duration' in audioResult ? audioResult.duration : 0)}s\n\n` +
           `🎧 Tu peux maintenant écouter et télécharger ton audio ci-dessus.\n\n` +
-          `💡 **Envie d'autre chose ?** Dis-moi "nouveau" pour créer un autre audio ou explique-moi ce que tu veux modifier !`
+          `💡 Envie d'autre chose ? Dis-moi "nouveau" pour créer un autre audio ou explique-moi ce que tu veux modifier !`
         );
 
         // Reset pour un nouveau projet
