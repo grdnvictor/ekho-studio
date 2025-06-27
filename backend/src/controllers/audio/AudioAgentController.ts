@@ -59,10 +59,10 @@ export class AudioAgentController {
       console.log("🎵 Audio généré:", result.audioGenerated);
 
       // Normaliser la phase pour le frontend
-      const normalizedPhase = this.normalizePhase(conversationState?.phase);
+      const normalizedPhase = AudioAgentController.normalizePhase(conversationState?.phase);
 
       // Analyser la réponse pour déterminer les actions possibles
-      const analysis = this.analyzeAgentResponse(
+      const analysis = AudioAgentController.analyzeAgentResponse(
         responseContent as string,
         conversationState,
         result.sessionData || {}
