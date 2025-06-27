@@ -227,10 +227,12 @@ export default function AudioPage() {
 
             if (result.success) {
                 // Extraire l'URL audio si présente
-                let audioUrl = null;
+                let audioUrl: string | null = null;
                 if (result.audioGenerated && result.audioUrl) {
                     audioUrl = result.audioUrl;
-                    setGeneratedAudios(prev => [...prev, audioUrl]);
+                    if (audioUrl) {
+                        setGeneratedAudios(prev => [...prev, audioUrl as string]);
+                    }
                 }
 
                 // Ajouter la réponse de l'agent
@@ -246,7 +248,7 @@ export default function AudioPage() {
                     collectedInfo: result.collectedInfo,
                     conversationLength: result.conversationLength,
                     phase: result.phase,
-                    audioUrl: audioUrl,
+                    audioUrl: audioUrl || undefined,
                     audioGenerated: result.audioGenerated
                 };
 
@@ -618,4 +620,106 @@ export default function AudioPage() {
                                             </div>
                                         )}
 
-                                        {/* Timestamp fun */
+                                        {/* Timestamp */}
+                                        <div className={`mt-2 text-xs ${
+                                            message.sender === 'user' ? 'opacity-70' : 'text-gray-500'
+                                        }`}>
+                                            {formatTime(message.timestamp)}
+                                            {message.conversationLength && ` • ${message.conversationLength} messages`}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+
+                        {/* Loading indicator */}
+                        {isLoading && (
+                            <div className="flex justify-start animate-fadeIn">
+                                <div className="flex items-start gap-3">
+                                    <div className="p-2 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 shadow-md">
+                                        <Bot className="w-4 h-4 text-white" />
+                                    </div>
+                                    <div className="bg-white border border-gray-200 rounded-2xl px-4 py-3 shadow-sm">
+                                        <div className="flex items-center gap-2 text-gray-600">
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                            <span className="text-sm">L&apos;assistant réfléchit...</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <div ref={messagesEndRef} />
+                    </CardContent>
+
+                    {/* Quick Replies */}
+                    {showQuickReplies && !isLoading && isClient && (
+                        <div className="px-4 py-2 border-t bg-gradient-to-r from-purple-50 to-pink-50">
+                            <div className="flex flex-wrap gap-2">
+                                {QUICK_REPLIES[currentPhase]?.map((reply, index) => (
+                                    <Button
+                                        key={`quick-${currentPhase}-${index}`}
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => handleQuickReply(reply)}
+                                        className="text-xs border-purple-300 text-purple-700 hover:bg-purple-100 transition-all transform hover:scale-105"
+                                    >
+                                        {reply}
+                                    </Button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Input Area */}
+                    <div className="p-4 border-t bg-white">
+                        <div className="flex gap-2">
+                            <div className="flex-1 relative">
+                                <Input
+                                    ref={inputRef}
+                                    type="text"
+                                    value={textInput}
+                                    onChange={(e) => setTextInput(e.target.value)}
+                                    onKeyPress={handleKeyPress}
+                                    placeholder={
+                                        currentPhase === 'discovery'
+                                            ? "Dis-moi ton idée..."
+                                            : currentPhase === 'clarification'
+                                                ? "Réponds à l'assistant..."
+                                                : currentPhase === 'generation'
+                                                    ? "Confirme ou ajuste..."
+                                                    : "Écris ton message..."
+                                    }
+                                    className="pr-12 h-12 text-base bg-white border-gray-300 focus:border-purple-500 focus:ring-purple-500 rounded-full transition-all"
+                                    disabled={isLoading}
+                                />
+                            </div>
+                            <Button
+                                onClick={() => sendMessage()}
+                                disabled={isLoading || !textInput.trim()}
+                                size="icon"
+                                className="h-12 w-12 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white rounded-full flex-shrink-0 shadow-lg transform hover:scale-105 transition-all"
+                            >
+                                {isLoading ? (
+                                    <Loader2 className="h-5 w-5 animate-spin" />
+                                ) : (
+                                    <Send className="h-5 w-5" />
+                                )}
+                            </Button>
+                        </div>
+
+                        <div className="mt-2 text-center">
+                            <p className="text-xs text-gray-500">
+                                {currentPhase === 'discovery' && "✨ Commence par me dire ton idée !"}
+                                {currentPhase === 'clarification' && "💬 L'assistant collecte les infos..."}
+                                {currentPhase === 'generation' && "🚀 Prêt pour la génération !"}
+                                {currentPhase === 'complete' && "🎉 Ton audio est créé !"}
+                                {" • Appuie sur Entrée pour envoyer"}
+                            </p>
+                        </div>
+                    </div>
+                </Card>
+            </div>
+        </div>
+    );
+}
