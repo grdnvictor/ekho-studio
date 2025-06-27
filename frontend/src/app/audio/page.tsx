@@ -707,10 +707,17 @@ export default function AudioPage() {
                                         {/* Phase indicator pour l'agent */}
                                         {message.sender === 'agent' && message.phase && (
                                             <div className="mt-3 flex items-center gap-2">
-                                                <div className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${PHASE_CONFIG[message.phase].color}`}>
-                                                    {React.createElement(PHASE_CONFIG[message.phase].icon, { className: "w-3 h-3" })}
-                                                    <span>{PHASE_CONFIG[message.phase].name}</span>
-                                                </div>
+                                                {(() => {
+                                                    const phase = message.phase as keyof typeof PHASE_CONFIG;
+                                                    const config = PHASE_CONFIG[phase] || PHASE_CONFIG.discovery;
+
+                                                    return (
+                                                        <div className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${config.color}`}>
+                                                            {React.createElement(config.icon, { className: "w-3 h-3" })}
+                                                            <span>{config.name}</span>
+                                                        </div>
+                                                    );
+                                                })()}
                                             </div>
                                         )}
 
